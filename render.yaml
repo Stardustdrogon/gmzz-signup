@@ -2,9 +2,13 @@ services:
   - type: web
     name: gmzz-signup
     runtime: python
-    plan: free
+    plan: starter
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python app.py"
     envVars:
       - key: PORT
         value: "10000"
+    disks:
+      - name: data
+        mountPath: /app/data
+        sizeGB: 1

@@ -673,6 +673,10 @@ def event_page(event_key):
 def all_page():
     return send_from_directory('public', 'all.html')
 
+@app.route('/history')
+def history_page():
+    return send_from_directory('public', 'history.html')
+
 @app.route('/api/health')
 def health():
     return jsonify({'status': 'ok', 'time': int(time.time()), 'week': get_current_week()})

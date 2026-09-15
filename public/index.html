@@ -12,10 +12,10 @@
         <div class="home-header">
             <div class="logo-icon">🎭</div>
             <h1 class="home-title">诡秘之主 · 活动报名</h1>
-            <p class="home-subtitle">塔罗会 · 帮会活动中心</p>
+            <p class="home-subtitle">塔罗会 · 帮会活动中心 · 第 <span id="currentWeek">--</span> 周</p>
         </div>
 
-        <div class="home-cards">
+        <div class="home-grid">
             <a href="/event/thursday" class="event-card thursday-card">
                 <div class="card-day">周四</div>
                 <div class="card-title">霜陨领主</div>
@@ -39,21 +39,38 @@
                 <div class="card-count" id="allCount">-- 人登记</div>
                 <div class="card-arrow">→</div>
             </a>
+
+            <a href="/history" class="event-card history-card">
+                <div class="card-day">档案</div>
+                <div class="card-title">历史记录</div>
+                <div class="card-time">📚 过往周次回顾</div>
+                <div class="card-count" id="historyCount">-- 周档案</div>
+                <div class="card-arrow">→</div>
+            </a>
         </div>
 
         <div class="home-footer">
-            <p>实时同步 · 数据自动更新</p>
+            <p>实时同步 · 每周日 00:00 自动归档</p>
         </div>
     </div>
 
     <script>
-        // 加载各活动人数
+        // 加载数据
         fetch('/api/members')
             .then(r => r.json())
             .then(data => {
+                document.getElementById('currentWeek').textContent = data.week;
                 document.getElementById('thursdayCount').textContent = data.totals.thursday + ' 人报名';
                 document.getElementById('saturdayCount').textContent = data.totals.saturday + ' 人报名';
                 document.getElementById('allCount').textContent = data.totals.total + ' 人登记';
+            })
+            .catch(() => {});
+
+        // 加载历史档案数量
+        fetch('/api/archives')
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('historyCount').textContent = data.weeks.length + ' 周档案';
             })
             .catch(() => {});
     </script>

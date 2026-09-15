@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>历史档案 · 活动报名</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="stars-bg"></div>
+    <div class="container">
+        <!-- 顶部导航 -->
+        <div class="top-nav">
+            <a href="/" class="back-btn">← 返回</a>
+            <div class="event-badge history-badge">📚 历史档案</div>
+        </div>
+
+        <!-- 标题 -->
+        <div class="event-header">
+            <h1 class="event-title">📚 历史档案</h1>
+            <p class="event-meta">过往周次报名记录 · 点击查看详情</p>
+        </div>
+
+        <!-- 周次列表 -->
+        <div class="list-section">
+            <div class="list-header">
+                <h2 class="section-title">🗓️ 周次列表</h2>
+            </div>
+            <div class="week-list" id="weekList">
+                <div class="empty-state">
+                    <div class="empty-icon">📭</div>
+                    <p>暂无历史档案</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 选中周的详情（默认隐藏） -->
+        <div class="list-section" id="detailSection" style="display:none;">
+            <div class="list-header">
+                <h2 class="section-title" id="detailTitle">第 -- 周</h2>
+                <button class="btn-secondary" style="flex:none;padding:6px 12px;font-size:12px;" onclick="closeDetail()">关闭</button>
+            </div>
+
+            <!-- 统计 -->
+            <div class="event-stats" style="margin-bottom:20px;">
+                <div class="stat-item">
+                    <span class="stat-num" id="dTotal">0</span>
+                    <span class="stat-label">总人数</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-num" id="dThu">0</span>
+                    <span class="stat-label">周四</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-num" id="dSat">0</span>
+                    <span class="stat-label">周六</span>
+                </div>
+                <div class="stat-item stat-both">
+                    <span class="stat-num" id="dBoth">0</span>
+                    <span class="stat-label">双场</span>
+                </div>
+            </div>
+
+            <!-- 名单 -->
+            <div class="member-list all-mode" id="detailMembers"></div>
+
+            <div style="margin-top:16px;text-align:center;">
+                <button class="btn-secondary" onclick="copyWeekList()" style="width:100%;">📄 复制本周名单</button>
+            </div>
+        </div>
+
+        <!-- 图例 -->
+        <div class="legend-bar">
+            <span class="legend-item"><span class="legend-dot both"></span>双场参加</span>
+            <span class="legend-item"><span class="legend-dot thu-only"></span>仅周四</span>
+            <span class="legend-item"><span class="legend-dot sat-only"></span>仅周六</span>
+        </div>
+
+        <div class="footer-space"></div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        const PROFESSIONS = ['战士', '占卜家', '窥秘人', '观众（奶）', '学徒', '歌颂者'];
+        const PROF_ICONS = {
+            '战士': '⚔️', '占卜家': '🔮', '窥秘人': '👁️',
+            '观众（奶）': '💚', '学徒': '📖', '歌颂者': '🎵'
+        };
+
+        let currentWeekData = null;
+
+        // 加载周次列表
+        function loadWeekList() {
+            fetch('/api/archives')
+                .then(r => r.json())
+                .then(data => {
+                    renderWeekList(data.weeks);
+                })
+                .catch(() => {
+                    showToast('加载失败', 'error');
+                });
+        }
+
+        function renderWeekList(weeks) {
+            const el = document.getElementById('weekList');
+            if (!weeks || weeks.length === 0) {
+                el.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">📭</div>
+                        <p>暂无历史档案<br><span style="font-size:12px;color:var(--text-muted);">每周日 00:00 自动归档</span></p>
+                    </div>`;
+                return;
+            }
+
+            let html = '';
+            weeks.forEach(w => {
+                html += `<div class="week-card" onclick="loadWeekDetail(${w.week})">
+                    <div class="week-num">第 ${w.week} 周</div>
+                    <div class="week-info">
+                        <span>👥 ${w.count} 人</span>
+                        <span>📅 ${w.archivedAtStr}</span>
+                    </div>
+                    <div class="week-arrow">→</div>
+                </div>`;
+            });
+            el.innerHTML = html;
+        }
+
+        // 加载某周详情
+        function loadWeekDetail(week) {
+            fetch('/api/archives?week=' + week)
+                .then(r => r.json())
+                .then(data => {
+                    currentWeekData = data;
+                    renderDetail(data);
+                    document.getElementById('detailSection').style.display = 'block';
+                    document.getElementById('detailSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
+                })
+                .catch(() => showToast('加载失败', 'error'));
+        }
+
+        function closeDetail() {
+            document.getElementById('detailSection').style.display = 'none';
+            currentWeekData = null;
+        }
+
+        function renderDetail(data) {
+            const members = data.members;
+            document.getElementById('detailTitle').textContent = `第 ${data.week} 周`;
+
+            const thu = members.filter(m => m.attendThursday).length;
+            const sat = members.filter(m => m.attendSaturday).length;
+            const both = members.filter(m => m.attendBoth).length;
+            document.getElementById('dTotal').textContent = members.length;
+            document.getElementById('dThu').textContent = thu;
+            document.getElementById('dSat').textContent = sat;
+            document.getElementById('dBoth').textContent = both;
+
+            // 按职业分组渲染
+            const grouped = {};
+            for (const p of PROFESSIONS) grouped[p] = [];
+            members.forEach(m => {
+                if (grouped[m.profession]) grouped[m.profession].push(m);
+            });
+
+            let html = '';
+            for (const prof of PROFESSIONS) {
+                const list = grouped[prof];
+                if (list.length === 0) continue;
+
+                html += `<div class="prof-group">
+                    <div class="prof-group-header">
+                        <span>${PROF_ICONS[prof] || ''} ${prof}</span>
+                        <span class="prof-group-count">${list.length} 人</span>
+                    </div>
+                    <div class="prof-members">`;
+
+                list.forEach(m => {
+                    const tag = m.attendBoth
+                        ? '<span class="tag tag-both">双场</span>'
+                        : (m.attendThursday
+                            ? '<span class="tag tag-thu">周四</span>'
+                            : '<span class="tag tag-sat">周六</span>');
+
+                    html += `<div class="member-card ${m.attendBoth ? 'is-both' : ''}">
+                        <div class="member-avatar" style="background: ${getProfColor(m.profession)}">
+                            ${m.name.charAt(0)}
+                        </div>
+                        <div class="member-info">
+                            <div class="member-name">${m.name} ${tag}</div>
+                            ${m.remark ? `<div class="member-remark">${m.remark}</div>` : ''}
+                        </div>
+                    </div>`;
+                });
+
+                html += `</div></div>`;
+            }
+
+            if (!html) {
+                html = '<div class="empty-state"><p>该周无记录</p></div>';
+            }
+
+            document.getElementById('detailMembers').innerHTML = html;
+        }
+
+        function getProfColor(prof) {
+            const colors = {
+                '战士': '#ef4444', '占卜家': '#8b5cf6', '窥秘人': '#6366f1',
+                '观众（奶）': '#22c55e', '学徒': '#f59e0b', '歌颂者': '#ec4899'
+            };
+            return colors[prof] || '#6b7280';
+        }
+
+        // 复制本周名单
+        function copyWeekList() {
+            if (!currentWeekData) return;
+            const members = currentWeekData.members;
+            const week = currentWeekData.week;
+
+            let lines = [];
+            lines.push(`===== 第 ${week} 周 活动报名名单 =====`);
+            lines.push('');
+
+            const thuMembers = members.filter(m => m.attendThursday);
+            lines.push(`【周四 · 霜陨领主】共 ${thuMembers.length} 人`);
+            for (const p of PROFESSIONS) {
+                const list = thuMembers.filter(m => m.profession === p).map(m => m.name);
+                if (list.length) lines.push(`  ${p}（${list.length}）：` + list.join('、'));
+            }
+            lines.push('');
+
+            const satMembers = members.filter(m => m.attendSaturday);
+            lines.push(`【周六 · 猎城战】共 ${satMembers.length} 人`);
+            for (const p of PROFESSIONS) {
+                const list = satMembers.filter(m => m.profession === p).map(m => m.name);
+                if (list.length) lines.push(`  ${p}（${list.length}）：` + list.join('、'));
+            }
+            lines.push('');
+
+            const both = members.filter(m => m.attendBoth);
+            lines.push(`【双场都参加】共 ${both.length} 人`);
+            lines.push(both.length ? '  ' + both.map(m=>m.name).join('、') : '  无');
+            lines.push('');
+            lines.push(`总计：${members.length} 人（周四 ${thuMembers.length} / 周六 ${satMembers.length} / 双场 ${both.length}）`);
+
+            const text = lines.join('\n');
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            showToast('📋 名单已复制', 'success');
+        }
+
+        // Toast
+        let toastTimer = null;
+        function showToast(msg, type = 'info') {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = 'toast show ' + type;
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => t.classList.remove('show'), 2500);
+        }
+
+        // 初始化
+        loadWeekList();
+    </script>
+</body>
+</html>
