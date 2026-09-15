@@ -17,16 +17,13 @@
 
         <!-- 活动信息 -->
         <div class="event-header" id="eventHeader">
+            <div class="week-badge" id="weekBadge">第 -- 周</div>
             <h1 class="event-title" id="eventTitle">--</h1>
             <p class="event-meta" id="eventMeta">--</p>
             <div class="event-stats">
                 <div class="stat-item">
                     <span class="stat-num" id="totalNum">0</span>
                     <span class="stat-label">已报名</span>
-                </div>
-                <div class="stat-item" id="bothStat" style="display:none;">
-                    <span class="stat-num" id="bothNum">0</span>
-                    <span class="stat-label">双场</span>
                 </div>
             </div>
         </div>
@@ -53,36 +50,12 @@
                 </div>
 
                 <div class="form-group">
-                    <label>参加场次</label>
-                    <div class="event-selector" id="eventSelector">
-                        <label class="event-option">
-                            <input type="checkbox" id="checkThursday" value="thursday">
-                            <span class="event-check">
-                                <span class="event-name">周四 · 霜陨领主</span>
-                            </span>
-                        </label>
-                        <label class="event-option">
-                            <input type="checkbox" id="checkSaturday" value="saturday">
-                            <span class="event-check">
-                                <span class="event-name">周六 · 猎城战</span>
-                            </span>
-                        </label>
-                    </div>
-                </div>
-
-                <div class="form-group">
                     <label>备注（选填）</label>
                     <input type="text" id="remarkInput" placeholder="替补/迟到/其他说明" maxlength="30">
                 </div>
 
                 <button type="submit" class="btn-primary" id="submitBtn">确认报名</button>
             </form>
-        </div>
-
-        <!-- 操作栏 -->
-        <div class="action-bar">
-            <button class="btn-secondary" onclick="showBatchModal()">📋 批量导入</button>
-            <button class="btn-secondary" onclick="copyList()">📄 复制名单</button>
         </div>
 
         <!-- 职业统计 -->
@@ -95,10 +68,6 @@
         <div class="list-section">
             <div class="list-header">
                 <h2 class="section-title">👥 报名名单 <span class="list-count" id="listCount">0</span></h2>
-                <div class="list-filter" id="listFilter" style="display:none;">
-                    <button class="filter-btn active" data-filter="all">全部</button>
-                    <button class="filter-btn" data-filter="both">双场</button>
-                </div>
             </div>
             <div class="member-list" id="memberList">
                 <div class="empty-state">
@@ -108,27 +77,12 @@
             </div>
         </div>
 
-        <div class="footer-space"></div>
-    </div>
-
-    <!-- 批量导入弹窗 -->
-    <div class="modal" id="batchModal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>批量导入名单</h3>
-                <button class="modal-close" onclick="hideBatchModal()">×</button>
-            </div>
-            <div class="modal-body">
-                <p class="modal-tip">每行一人，格式：<br><code>姓名 职业 周四 周六</code><br>
-                职业写简称也能识别（如"奶"=观众奶）<br>
-                周四/周六用"是/否"或"1/0"表示</p>
-                <textarea id="batchText" placeholder="示例：&#10;张三 战士 是 是&#10;李四 奶 1 0&#10;王五 占卜家 周四 周六"></textarea>
-                <div class="modal-actions">
-                    <button class="btn-secondary" onclick="hideBatchModal()">取消</button>
-                    <button class="btn-primary" onclick="doBatchImport()">确认导入</button>
-                </div>
-            </div>
+        <!-- 底部返回键 -->
+        <div class="bottom-actions">
+            <a href="/" class="btn-back-home">← 返回首页</a>
         </div>
+
+        <div class="footer-space"></div>
     </div>
 
     <!-- Toast -->
@@ -136,8 +90,7 @@
 
     <script src="/app.js"></script>
     <script>
-        // 初始化活动页面
-        const eventKey = window.location.pathname.split('/').pop(); // thursday / saturday
+        const eventKey = window.location.pathname.split('/').pop();
         initEventPage(eventKey);
     </script>
 </body>
