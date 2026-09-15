@@ -1,14 +1,20 @@
+databases:
+  - name: gmzz-signup-db
+    databaseName: gmzz_signup
+    user: gmzz_signup
+    plan: free
+
 services:
   - type: web
     name: gmzz-signup
     runtime: python
-    plan: starter
+    plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python app.py"
     envVars:
       - key: PORT
         value: "10000"
-    disks:
-      - name: data
-        mountPath: /app/data
-        sizeGB: 1
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gmzz-signup-db
+          property: connectionString

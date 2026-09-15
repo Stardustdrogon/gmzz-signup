@@ -1,14 +1,13 @@
-# 诡秘之主 活动报名系统 - 后端服务 (Python + SQLite)
+# 诡秘之主 活动报名系统 - 后端服务
+# 支持 SQLite（默认）和 Postgres（DATABASE_URL 环境变量时自动切换）
 # 固定两场活动：周四 霜陨领主 / 周六 猎城战
 # 功能：成员报名、SSE 实时推送、批量导入、总名单、导出、周数管理、每周日自动归档重置
 
-import sqlite3
 import json
 import time
 import os
 import re
 import threading
-import shutil
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, Response, send_from_directory
 from flask_cors import CORS
@@ -24,150 +23,167 @@ def handle_exception(e):
     print(traceback.format_exc())
     return jsonify({'error': str(e)}), 500
 
-# 配置
-DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(__file__), 'data', 'signup.db'))
-BACKUP_DIR = os.environ.get('BACKUP_DIR', os.path.join(os.path.dirname(__file__), 'data', 'backups'))
-PORT = int(os.environ.get('PORT', 3000))
+# ========== 数据库抽象层 ==========
+# 自动检测：有 DATABASE_URL 用 Postgres，否则用 SQLite
 
-# 职业列表
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
+USE_POSTGRES = bool(DATABASE_URL)
+
+if USE_POSTGRES:
+    import psycopg2
+    import psycopg2.extras
+    print('🐘 使用 Postgres 数据库')
+else:
+    import sqlite3
+    DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(__file__), 'data', 'signup.db'))
+    print('📦 使用 SQLite 数据库')
+
+PORT = int(os.environ.get('PORT', 3000))
 PROFESSIONS = ['战士', '占卜家', '窥秘人', '观众（奶）', '学徒', '歌颂者']
 
-# 活动配置
 EVENTS = {
     'thursday': {
-        'key': 'thursday',
-        'title': '霜陨领主',
-        'day': '周四',
-        'time': '晚上 8:00',
-        'color': '#8b5cf6'
+        'key': 'thursday', 'title': '霜陨领主',
+        'day': '周四', 'time': '晚上 8:00', 'color': '#8b5cf6'
     },
     'saturday': {
-        'key': 'saturday',
-        'title': '猎城战',
-        'day': '周六',
-        'time': '晚上 8:00',
-        'color': '#3b82f6'
+        'key': 'saturday', 'title': '猎城战',
+        'day': '周六', 'time': '晚上 8:00', 'color': '#3b82f6'
     }
 }
 
-# SSE 客户端集合
 sse_clients = set()
 sse_lock = threading.Lock()
 
 
-# ===== 周数计算 =====
-def get_current_week():
-    """计算当前是第几周（以第一周周日0点为起点，每7天+1）"""
-    conn = get_db()
-    row = conn.execute('SELECT value FROM settings WHERE key = ?', ('start_week',)).fetchone()
-    conn.close()
-
-    if row:
-        start_week = int(row['value'])
+# ===== 数据库连接 =====
+def get_db():
+    if USE_POSTGRES:
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.cursor_factory = psycopg2.extras.RealDictCursor
+        conn.autocommit = False
+        return conn
     else:
-        # 默认从第1周开始
-        start_week = 1
-        conn = get_db()
-        conn.execute("INSERT INTO settings (key, value) VALUES ('start_week', '1')")
-        conn.commit()
-        conn.close()
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.row_factory = sqlite3.Row
+        return conn
 
-    # 获取基准日期（start_date）
-    conn = get_db()
-    row = conn.execute("SELECT value FROM settings WHERE key = 'start_date'").fetchone()
-    conn.close()
 
-    if row:
-        start_date = int(row['value'])
+def db_execute(conn, query, params=None):
+    """执行查询，返回 cursor"""
+    cur = conn.cursor()
+    cur.execute(query, params or ())
+    return cur
+
+
+def db_fetchone(cur):
+    if USE_POSTGRES:
+        row = cur.fetchone()
+        return dict(row) if row else None
     else:
-        # 以最近一个周日0点为基准
-        now = datetime.now()
-        # 找到上一个周日
-        days_since_sunday = now.weekday() + 1  # 周日=0...周六=6 -> weekday周一=0,周日=6
-        if days_since_sunday >= 7:
-            days_since_sunday = 0
-        sunday = now - timedelta(days=days_since_sunday)
-        sunday = sunday.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_date = int(sunday.timestamp())
-        conn = get_db()
-        conn.execute("INSERT INTO settings (key, value) VALUES ('start_date', ?)", (str(start_date),))
-        conn.commit()
-        conn.close()
-
-    now_ts = int(time.time())
-    week = start_week + (now_ts - start_date) // (7 * 24 * 3600)
-    return week
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 
-def get_next_reset_time():
-    """计算下一个周日 00:00 的时间戳"""
-    now = datetime.now()
-    days_until_sunday = (6 - now.weekday()) % 7  # 周日=6
-    if days_until_sunday == 0 and now.hour >= 0:
-        # 如果今天是周日且已经过了0点，那下一个周日是7天后
-        if now.hour > 0 or now.minute > 0 or now.second > 0:
-            days_until_sunday = 7
+def db_fetchall(cur):
+    if USE_POSTGRES:
+        return [dict(r) for r in cur.fetchall()]
+    else:
+        return [dict(r) for r in cur.fetchall()]
 
-    next_sunday = now + timedelta(days=days_until_sunday)
-    next_sunday = next_sunday.replace(hour=0, minute=0, second=0, microsecond=0)
-    return int(next_sunday.timestamp())
+
+def db_now_ts():
+    """获取当前时间戳的 SQL 表达式"""
+    return "EXTRACT(EPOCH FROM NOW())" if USE_POSTGRES else "strftime('%s', 'now')"
 
 
 # ===== 数据库初始化 =====
 def init_db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    os.makedirs(BACKUP_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA journal_mode=DELETE')
-    conn.executescript('''
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
+    conn = get_db()
+    cur = conn.cursor()
 
-        CREATE TABLE IF NOT EXISTS members (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            profession TEXT NOT NULL CHECK (profession IN ('战士','占卜家','窥秘人','观众（奶）','学徒','歌颂者')),
-            attend_thursday INTEGER NOT NULL DEFAULT 0,
-            attend_saturday INTEGER NOT NULL DEFAULT 0,
-            remark TEXT DEFAULT '',
-            created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-            updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-        );
+    if USE_POSTGRES:
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
 
-        CREATE TABLE IF NOT EXISTS archives (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            week_num INTEGER NOT NULL,
-            member_name TEXT NOT NULL,
-            profession TEXT NOT NULL,
-            attend_thursday INTEGER NOT NULL DEFAULT 0,
-            attend_saturday INTEGER NOT NULL DEFAULT 0,
-            remark TEXT DEFAULT '',
-            archived_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-        );
+            CREATE TABLE IF NOT EXISTS members (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                profession TEXT NOT NULL CHECK (profession IN ('战士','占卜家','窥秘人','观众（奶）','学徒','歌颂者')),
+                attend_thursday INTEGER NOT NULL DEFAULT 0,
+                attend_saturday INTEGER NOT NULL DEFAULT 0,
+                remark TEXT DEFAULT '',
+                created_at INTEGER NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW()),
+                updated_at INTEGER NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW())
+            );
 
-        CREATE INDEX IF NOT EXISTS idx_members_profession ON members(profession);
-        CREATE INDEX IF NOT EXISTS idx_members_thursday ON members(attend_thursday);
-        CREATE INDEX IF NOT EXISTS idx_members_saturday ON members(attend_saturday);
-        CREATE INDEX IF NOT EXISTS idx_archives_week ON archives(week_num);
-    ''')
+            CREATE TABLE IF NOT EXISTS archives (
+                id SERIAL PRIMARY KEY,
+                week_num INTEGER NOT NULL,
+                member_name TEXT NOT NULL,
+                profession TEXT NOT NULL,
+                attend_thursday INTEGER NOT NULL DEFAULT 0,
+                attend_saturday INTEGER NOT NULL DEFAULT 0,
+                remark TEXT DEFAULT '',
+                archived_at INTEGER NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW())
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_members_profession ON members(profession);
+            CREATE INDEX IF NOT EXISTS idx_members_thursday ON members(attend_thursday);
+            CREATE INDEX IF NOT EXISTS idx_members_saturday ON members(attend_saturday);
+            CREATE INDEX IF NOT EXISTS idx_archives_week ON archives(week_num);
+        ''')
+    else:
+        import os
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        cur.execute('PRAGMA journal_mode=DELETE')
+        cur.executescript('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                profession TEXT NOT NULL CHECK (profession IN ('战士','占卜家','窥秘人','观众（奶）','学徒','歌颂者')),
+                attend_thursday INTEGER NOT NULL DEFAULT 0,
+                attend_saturday INTEGER NOT NULL DEFAULT 0,
+                remark TEXT DEFAULT '',
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS archives (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                week_num INTEGER NOT NULL,
+                member_name TEXT NOT NULL,
+                profession TEXT NOT NULL,
+                attend_thursday INTEGER NOT NULL DEFAULT 0,
+                attend_saturday INTEGER NOT NULL DEFAULT 0,
+                remark TEXT DEFAULT '',
+                archived_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_members_profession ON members(profession);
+            CREATE INDEX IF NOT EXISTS idx_members_thursday ON members(attend_thursday);
+            CREATE INDEX IF NOT EXISTS idx_members_saturday ON members(attend_saturday);
+            CREATE INDEX IF NOT EXISTS idx_archives_week ON archives(week_num);
+        ''')
+
     conn.commit()
     conn.close()
-    print(f'✅ 数据库已就绪: {DB_PATH}')
+    print('✅ 数据库已就绪')
 
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
+# ===== 工具函数 =====
 def row_to_dict(row):
     if row is None:
         return None
-    d = dict(row)
+    d = dict(row) if not isinstance(row, dict) else row
     d['attendThursday'] = bool(d.get('attend_thursday', 0))
     d['attendSaturday'] = bool(d.get('attend_saturday', 0))
     d.pop('attend_thursday', None)
@@ -176,9 +192,7 @@ def row_to_dict(row):
     return d
 
 
-# ===== SSE 工具 =====
 def broadcast(event, data):
-    """向所有连接推送消息"""
     msg = f'event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
     with sse_lock:
         dead = []
@@ -191,66 +205,89 @@ def broadcast(event, data):
             sse_clients.discard(q)
 
 
-# ===== 周日自动归档 & 重置 =====
+# ===== 周数计算 =====
+def get_current_week():
+    now_ts = int(time.time())
+
+    # 读设置
+    conn = get_db()
+    cur = db_execute(conn, "SELECT value FROM settings WHERE key = 'start_date'")
+    row = db_fetchone(cur)
+
+    if not row:
+        # 初始化：以上一个周日为起点
+        now = datetime.now()
+        days_since_sunday = (now.weekday() + 1) % 7
+        sunday = now - timedelta(days=days_since_sunday)
+        sunday = sunday.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_date = int(sunday.timestamp())
+
+        db_execute(conn, "INSERT INTO settings (key, value) VALUES ('start_date', %s)" if USE_POSTGRES else "INSERT INTO settings (key, value) VALUES (?, ?)",
+                   (str(start_date),) if USE_POSTGRES else ('start_date', str(start_date)))
+        conn.commit()
+    else:
+        start_date = int(row['value'])
+
+    conn.close()
+
+    week = 1 + (now_ts - start_date) // (7 * 24 * 3600)
+    return week
+
+
+def get_next_reset_time():
+    now = datetime.now()
+    days_until_sunday = (6 - now.weekday()) % 7
+    next_sunday = now + timedelta(days=days_until_sunday)
+    next_sunday = next_sunday.replace(hour=0, minute=0, second=0, microsecond=0)
+    # 如果今天就是周日且还没过0点（理论不会发生，因为过了就进下一周了）
+    if next_sunday <= now:
+        next_sunday = next_sunday + timedelta(days=7)
+    return int(next_sunday.timestamp())
+
+
+# ===== 周日自动归档 =====
 def do_weekly_reset():
-    """执行周归档：把当前名单存到archives，清空members，周数+1"""
     week = get_current_week()
     conn = get_db()
 
-    # 1. 把当前成员归档到 archives
-    members = conn.execute('SELECT * FROM members').fetchall()
+    # 1. 归档
+    cur = db_execute(conn, 'SELECT * FROM members')
+    members = db_fetchall(cur)
+
     for m in members:
-        conn.execute(
-            '''INSERT INTO archives (week_num, member_name, profession, attend_thursday, attend_saturday, remark)
-               VALUES (?, ?, ?, ?, ?, ?)''',
-            (week, m['name'], m['profession'], m['attend_thursday'], m['attend_saturday'], m['remark'])
-        )
+        if USE_POSTGRES:
+            db_execute(conn,
+                '''INSERT INTO archives (week_num, member_name, profession, attend_thursday, attend_saturday, remark)
+                   VALUES (%s, %s, %s, %s, %s, %s)''',
+                (week, m['name'], m['profession'], m['attend_thursday'], m['attend_saturday'], m.get('remark', '')))
+        else:
+            db_execute(conn,
+                '''INSERT INTO archives (week_num, member_name, profession, attend_thursday, attend_saturday, remark)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                (week, m['name'], m['profession'], m['attend_thursday'], m['attend_saturday'], m.get('remark', '')))
 
-    # 2. 备份数据库文件
-    backup_name = f'week_{week}_{datetime.now().strftime("%Y%m%d")}.db'
-    backup_path = os.path.join(BACKUP_DIR, backup_name)
-    try:
-        # 先关闭连接再备份
-        conn.commit()
-        conn.close()
-        shutil.copy2(DB_PATH, backup_path)
-        conn = get_db()
-    except Exception as e:
-        print(f'[备份] 文件备份失败: {e}')
-        conn = get_db()
-
-    # 3. 清空当前成员
-    conn.execute('DELETE FROM members')
+    # 2. 清空
+    db_execute(conn, 'DELETE FROM members')
     conn.commit()
     conn.close()
 
     new_week = week + 1
     print(f'[周重置] 第{week}周已归档，共{len(members)}人。进入第{new_week}周')
-
-    # 推送通知
     broadcast('week_reset', {'week': new_week, 'archivedCount': len(members)})
-
     return new_week
 
 
 def weekly_reset_scheduler():
-    """后台线程：检测是否到了周日零点，执行归档重置"""
     while True:
         try:
             next_reset = get_next_reset_time()
             now = int(time.time())
             sleep_time = next_reset - now
-
-            if sleep_time <= 0:
-                # 已经过了，立即执行（理论上不会发生）
+            check_interval = min(sleep_time, 3600)
+            if check_interval <= 0:
                 do_weekly_reset()
                 continue
-
-            # 每隔一小时检查一次，避免时间漂移
-            check_interval = min(sleep_time, 3600)
             time.sleep(check_interval)
-
-            # 重新计算，确认真的到点了
             now = int(time.time())
             if now >= get_next_reset_time():
                 do_weekly_reset()
@@ -260,7 +297,6 @@ def weekly_reset_scheduler():
 
 
 def start_weekly_scheduler():
-    """启动周重置后台线程"""
     t = threading.Thread(target=weekly_reset_scheduler, daemon=True)
     t.start()
     week = get_current_week()
@@ -269,7 +305,9 @@ def start_weekly_scheduler():
     print(f'📅 当前第 {week} 周，下次重置: {next_str}')
 
 
-# ===== SSE 流 =====
+# ========== API 路由 ==========
+
+# SSE
 @app.route('/api/stream')
 def stream():
     import queue
@@ -279,11 +317,9 @@ def stream():
 
     def generate():
         try:
-            # 发送初始化事件，带上周数
             week = get_current_week()
             next_reset = get_next_reset_time()
             yield f'event: connected\ndata: {json.dumps({"status":"ok","week":week,"nextReset":next_reset}, ensure_ascii=False)}\n\n'
-            # 心跳
             while True:
                 try:
                     msg = q.get(timeout=30)
@@ -302,7 +338,7 @@ def stream():
                              'Connection': 'keep-alive'})
 
 
-# ===== 周信息 =====
+# 周信息
 @app.route('/api/week')
 def get_week_info():
     week = get_current_week()
@@ -314,77 +350,73 @@ def get_week_info():
     })
 
 
-# ===== 归档历史 =====
+# 归档历史
 @app.route('/api/archives')
 def get_archives():
     week = request.args.get('week')
     conn = get_db()
 
     if week:
-        rows = conn.execute(
-            'SELECT * FROM archives WHERE week_num = ? ORDER BY member_name',
-            (int(week),)
-        ).fetchall()
+        cur = db_execute(conn,
+            'SELECT * FROM archives WHERE week_num = %s ORDER BY member_name' if USE_POSTGRES
+            else 'SELECT * FROM archives WHERE week_num = ? ORDER BY member_name',
+            (int(week),))
+        rows = db_fetchall(cur)
+        members = []
+        for r in rows:
+            d = dict(r)
+            d['attendThursday'] = bool(d.get('attend_thursday', 0))
+            d['attendSaturday'] = bool(d.get('attend_saturday', 0))
+            d['attendBoth'] = d['attendThursday'] and d['attendSaturday']
+            d['name'] = d['member_name']
+            members.append(d)
+        conn.close()
+        return jsonify({'week': int(week), 'members': members})
     else:
-        # 返回所有周的列表
-        rows = conn.execute(
-            'SELECT week_num, COUNT(*) as count, MAX(archived_at) as archived_at FROM archives GROUP BY week_num ORDER BY week_num DESC'
-        ).fetchall()
+        cur = db_execute(conn,
+            'SELECT week_num, COUNT(*) as count, MAX(archived_at) as archived_at FROM archives GROUP BY week_num ORDER BY week_num DESC')
+        rows = db_fetchall(cur)
         result = []
         for r in rows:
+            archived_at = int(r['archived_at'])
             result.append({
                 'week': r['week_num'],
                 'count': r['count'],
-                'archivedAt': r['archived_at'],
-                'archivedAtStr': datetime.fromtimestamp(r['archived_at']).strftime('%Y-%m-%d')
+                'archivedAt': archived_at,
+                'archivedAtStr': datetime.fromtimestamp(archived_at).strftime('%Y-%m-%d')
             })
         conn.close()
         return jsonify({'weeks': result})
 
-    members = []
-    for r in rows:
-        d = dict(r)
-        d['attendThursday'] = bool(d['attend_thursday'])
-        d['attendSaturday'] = bool(d['attend_saturday'])
-        d['attendBoth'] = d['attendThursday'] and d['attendSaturday']
-        d['name'] = d['member_name']
-        d.pop('attend_thursday', None)
-        d.pop('attend_saturday', None)
-        d.pop('member_name', None)
-        members.append(d)
 
-    conn.close()
-    return jsonify({'week': int(week) if week else 0, 'members': members})
-
-
-# ===== 活动配置 =====
+# 活动配置
 @app.route('/api/events')
 def get_events():
     week = get_current_week()
     return jsonify({'events': list(EVENTS.values()), 'week': week})
 
 
-# ===== 获取总名单 =====
+# 名单
 @app.route('/api/members')
 def get_all_members():
     event_key = request.args.get('event')
-
     conn = get_db()
-    query = 'SELECT * FROM members WHERE 1=1'
+
     params = []
-
+    where = 'WHERE 1=1'
     if event_key == 'thursday':
-        query += ' AND attend_thursday = 1'
+        where += ' AND attend_thursday = 1'
     elif event_key == 'saturday':
-        query += ' AND attend_saturday = 1'
+        where += ' AND attend_saturday = 1'
 
-    query += ' ORDER BY '
-    query += "CASE profession "
+    # 按职业排序
+    order = 'ORDER BY CASE profession '
     for i, p in enumerate(PROFESSIONS):
-        query += f"WHEN '{p}' THEN {i} "
-    query += "ELSE 99 END, name"
+        order += f"WHEN '{p}' THEN {i} "
+    order += "ELSE 99 END, name"
 
-    rows = conn.execute(query, params).fetchall()
+    cur = db_execute(conn, f'SELECT * FROM members {where} {order}', tuple(params))
+    rows = db_fetchall(cur)
     members = [row_to_dict(r) for r in rows]
 
     totals = {
@@ -398,12 +430,12 @@ def get_all_members():
 
     stats = {}
     for p in PROFESSIONS:
-        p_members = [m for m in members if m['profession'] == p]
+        pm = [m for m in members if m['profession'] == p]
         stats[p] = {
-            'total': len(p_members),
-            'thursday': sum(1 for m in p_members if m['attendThursday']),
-            'saturday': sum(1 for m in p_members if m['attendSaturday']),
-            'both': sum(1 for m in p_members if m['attendBoth']),
+            'total': len(pm),
+            'thursday': sum(1 for m in pm if m['attendThursday']),
+            'saturday': sum(1 for m in pm if m['attendSaturday']),
+            'both': sum(1 for m in pm if m['attendBoth']),
         }
 
     week = get_current_week()
@@ -411,21 +443,18 @@ def get_all_members():
     conn.close()
 
     return jsonify({
-        'week': week,
-        'nextReset': next_reset,
-        'members': members,
-        'totals': totals,
-        'stats': stats
+        'week': week, 'nextReset': next_reset,
+        'members': members, 'totals': totals, 'stats': stats
     })
 
 
-# ===== 报名 =====
+# 报名
 @app.route('/api/signup', methods=['POST'])
 def signup():
     data = request.get_json()
     name = (data.get('name') or '').strip()
     profession = data.get('profession', '')
-    event_key = data.get('event', 'both')  # thursday / saturday / both
+    event_key = data.get('event', 'both')
     remark = (data.get('remark') or '').strip()
 
     if not name:
@@ -435,82 +464,77 @@ def signup():
     if event_key not in ['thursday', 'saturday', 'both']:
         return jsonify({'error': '请选择参加的活动'}), 400
 
+    thu = 1 if event_key in ('thursday', 'both') else 0
+    sat = 1 if event_key in ('saturday', 'both') else 0
+
     conn = get_db()
-    existing = conn.execute('SELECT * FROM members WHERE name = ?', (name,)).fetchone()
+
+    # 查找是否已存在
+    cur = db_execute(conn,
+        'SELECT * FROM members WHERE name = %s' if USE_POSTGRES else 'SELECT * FROM members WHERE name = ?',
+        (name,))
+    existing = db_fetchone(cur)
 
     if existing:
-        thu = 1 if (existing['attend_thursday'] or event_key in ('thursday', 'both')) else 0
-        sat = 1 if (existing['attend_saturday'] or event_key in ('saturday', 'both')) else 0
-        conn.execute(
-            '''UPDATE members SET profession = ?, attend_thursday = ?, attend_saturday = ?,
-               remark = ?, updated_at = strftime('%s', 'now') WHERE id = ?''',
-            (profession, thu, sat, remark, existing['id'])
-        )
+        new_thu = existing['attend_thursday'] or thu
+        new_sat = existing['attend_saturday'] or sat
+        now_expr = db_now_ts()
+        if USE_POSTGRES:
+            db_execute(conn,
+                f'''UPDATE members SET profession=%s, attend_thursday=%s, attend_saturday=%s,
+                   remark=%s, updated_at={now_expr} WHERE id=%s''',
+                (profession, new_thu, new_sat, remark, existing['id']))
+        else:
+            db_execute(conn,
+                f'''UPDATE members SET profession=?, attend_thursday=?, attend_saturday=?,
+                   remark=?, updated_at={now_expr} WHERE id=?''',
+                (profession, new_thu, new_sat, remark, existing['id']))
         member_id = existing['id']
+        is_new = False
     else:
-        thu = 1 if event_key in ('thursday', 'both') else 0
-        sat = 1 if event_key in ('saturday', 'both') else 0
-        cur = conn.execute(
-            '''INSERT INTO members (name, profession, attend_thursday, attend_saturday, remark)
-               VALUES (?, ?, ?, ?, ?)''',
-            (name, profession, thu, sat, remark)
-        )
-        member_id = cur.lastrowid
+        now_expr = db_now_ts()
+        if USE_POSTGRES:
+            cur = db_execute(conn,
+                f'''INSERT INTO members (name, profession, attend_thursday, attend_saturday, remark)
+                   VALUES (%s, %s, %s, %s, %s) RETURNING id''',
+                (name, profession, thu, sat, remark))
+            member_id = db_fetchone(cur)['id']
+        else:
+            cur = db_execute(conn,
+                f'''INSERT INTO members (name, profession, attend_thursday, attend_saturday, remark)
+                   VALUES (?, ?, ?, ?, ?)''',
+                (name, profession, thu, sat, remark))
+            member_id = cur.lastrowid
+        is_new = True
 
     conn.commit()
-    member = row_to_dict(conn.execute('SELECT * FROM members WHERE id = ?', (member_id,)).fetchone())
+
+    # 读回完整数据
+    cur = db_execute(conn,
+        'SELECT * FROM members WHERE id = %s' if USE_POSTGRES else 'SELECT * FROM members WHERE id = ?',
+        (member_id,))
+    member = row_to_dict(db_fetchone(cur))
     conn.close()
 
     broadcast('member_updated', {'member': member})
-    return jsonify({'member': member, 'isNew': existing is None})
+    return jsonify({'member': member, 'isNew': is_new})
 
 
-# ===== 取消报名某场 =====
-@app.route('/api/members/<int:member_id>/cancel', methods=['POST'])
-def cancel_member(member_id):
-    data = request.get_json()
-    event_key = data.get('event')
-
-    if event_key not in ['thursday', 'saturday']:
-        return jsonify({'error': '无效的活动'}), 400
-
-    conn = get_db()
-    member = conn.execute('SELECT * FROM members WHERE id = ?', (member_id,)).fetchone()
-    if not member:
-        conn.close()
-        return jsonify({'error': '成员不存在'}), 404
-
-    if event_key == 'thursday':
-        conn.execute('UPDATE members SET attend_thursday = 0, updated_at = strftime("%s", "now") WHERE id = ?', (member_id,))
-    else:
-        conn.execute('UPDATE members SET attend_saturday = 0, updated_at = strftime("%s", "now") WHERE id = ?', (member_id,))
-
-    conn.commit()
-
-    updated = conn.execute('SELECT * FROM members WHERE id = ?', (member_id,)).fetchone()
-    if updated['attend_thursday'] == 0 and updated['attend_saturday'] == 0:
-        conn.execute('DELETE FROM members WHERE id = ?', (member_id,))
-        conn.commit()
-        conn.close()
-        broadcast('member_removed', {'id': member_id})
-        return jsonify({'removed': True})
-
-    member_dict = row_to_dict(updated)
-    conn.close()
-    broadcast('member_updated', {'member': member_dict})
-    return jsonify({'member': member_dict, 'removed': False})
-
-
-# ===== 删除成员 =====
+# 删除成员
 @app.route('/api/members/<int:member_id>', methods=['DELETE'])
 def delete_member(member_id):
     conn = get_db()
-    member = conn.execute('SELECT * FROM members WHERE id = ?', (member_id,)).fetchone()
+    cur = db_execute(conn,
+        'SELECT * FROM members WHERE id = %s' if USE_POSTGRES else 'SELECT * FROM members WHERE id = ?',
+        (member_id,))
+    member = db_fetchone(cur)
     if not member:
         conn.close()
         return jsonify({'error': '成员不存在'}), 404
 
-    conn.execute('DELETE FROM members WHERE id = ?', (member_id,))
+    db_execute(conn,
+        'DELETE FROM members WHERE id = %s' if USE_POSTGRES else 'DELETE FROM members WHERE id = ?',
+        (member_id,))
     conn.commit()
     conn.close()
 
@@ -518,7 +542,7 @@ def delete_member(member_id):
     return jsonify({'success': True})
 
 
-# ===== 批量导入 =====
+# 批量导入
 @app.route('/api/batch', methods=['POST'])
 def batch_import():
     data = request.get_json()
@@ -532,6 +556,7 @@ def batch_import():
     conn = get_db()
     imported = []
     errors = []
+    now_expr = db_now_ts()
 
     for line in lines:
         try:
@@ -574,25 +599,44 @@ def batch_import():
                 else:
                     thu = sat = 1
 
-            existing = conn.execute('SELECT * FROM members WHERE name = ?', (name,)).fetchone()
+            # 查找现有
+            cur = db_execute(conn,
+                'SELECT * FROM members WHERE name = %s' if USE_POSTGRES else 'SELECT * FROM members WHERE name = ?',
+                (name,))
+            existing = db_fetchone(cur)
+
             if existing:
                 new_thu = existing['attend_thursday'] or thu
                 new_sat = existing['attend_saturday'] or sat
-                conn.execute(
-                    '''UPDATE members SET profession = ?, attend_thursday = ?, attend_saturday = ?,
-                       updated_at = strftime('%s', 'now') WHERE id = ?''',
-                    (profession, new_thu, new_sat, existing['id'])
-                )
-                row = conn.execute('SELECT * FROM members WHERE id = ?', (existing['id'],)).fetchone()
+                if USE_POSTGRES:
+                    db_execute(conn,
+                        f'''UPDATE members SET profession=%s, attend_thursday=%s, attend_saturday=%s,
+                           updated_at={now_expr} WHERE id=%s''',
+                        (profession, new_thu, new_sat, existing['id']))
+                else:
+                    db_execute(conn,
+                        f'''UPDATE members SET profession=?, attend_thursday=?, attend_saturday=?,
+                           updated_at={now_expr} WHERE id=?''',
+                        (profession, new_thu, new_sat, existing['id']))
+                mid = existing['id']
             else:
-                cur = conn.execute(
-                    '''INSERT INTO members (name, profession, attend_thursday, attend_saturday)
-                       VALUES (?, ?, ?, ?)''',
-                    (name, profession, thu, sat)
-                )
-                row = conn.execute('SELECT * FROM members WHERE id = ?', (cur.lastrowid,)).fetchone()
+                if USE_POSTGRES:
+                    cur = db_execute(conn,
+                        f'''INSERT INTO members (name, profession, attend_thursday, attend_saturday)
+                           VALUES (%s, %s, %s, %s) RETURNING id''',
+                        (name, profession, thu, sat))
+                    mid = db_fetchone(cur)['id']
+                else:
+                    cur = db_execute(conn,
+                        f'''INSERT INTO members (name, profession, attend_thursday, attend_saturday)
+                           VALUES (?, ?, ?, ?)''',
+                        (name, profession, thu, sat))
+                    mid = cur.lastrowid
 
-            imported.append(row_to_dict(row))
+            cur = db_execute(conn,
+                'SELECT * FROM members WHERE id = %s' if USE_POSTGRES else 'SELECT * FROM members WHERE id = ?',
+                (mid,))
+            imported.append(row_to_dict(db_fetchone(cur)))
         except Exception as e:
             errors.append(f'{line}: {str(e)}')
 
@@ -600,7 +644,6 @@ def batch_import():
     conn.close()
 
     broadcast('batch_imported', {'count': len(imported)})
-
     return jsonify({
         'imported': len(imported),
         'totalLines': len(lines),
@@ -609,7 +652,7 @@ def batch_import():
     })
 
 
-# ===== 导出名单 =====
+# 导出
 @app.route('/api/export')
 def export_list():
     fmt = request.args.get('format', 'text')
@@ -617,7 +660,8 @@ def export_list():
     week = get_current_week()
 
     conn = get_db()
-    rows = conn.execute('SELECT * FROM members ORDER BY name').fetchall()
+    cur = db_execute(conn, 'SELECT * FROM members ORDER BY name')
+    rows = db_fetchall(cur)
     members = [row_to_dict(r) for r in rows]
     conn.close()
 
@@ -660,7 +704,7 @@ def export_list():
     return jsonify({'week': week, 'content': content})
 
 
-# ===== 页面路由 =====
+# 页面路由
 @app.route('/')
 def index():
     return send_from_directory('public', 'index.html')
@@ -679,21 +723,26 @@ def history_page():
 
 @app.route('/api/health')
 def health():
-    return jsonify({'status': 'ok', 'time': int(time.time()), 'week': get_current_week()})
+    return jsonify({'status': 'ok', 'time': int(time.time()), 'week': get_current_week(), 'db': 'postgres' if USE_POSTGRES else 'sqlite'})
 
 
 # ===== 启动 =====
 if __name__ == '__main__':
     init_db()
-    week = get_current_week()  # 确保 settings 初始化
+    _ = get_current_week()
     start_weekly_scheduler()
+
+    db_type = 'Postgres' if USE_POSTGRES else 'SQLite'
+    week = get_current_week()
     print()
     print('╔═══════════════════════════════════════════╗')
-    print(f'║  诡秘之主 · 活动报名系统 v3.0    第 {str(week).ljust(2)}周    ║')
+    print(f'║  诡秘之主 · 活动报名系统 v4.0    第 {str(week).ljust(2)}周    ║')
+    print(f'║  数据库: {db_type.ljust(29)}║')
     print('╠═══════════════════════════════════════════╣')
     print('║  周四 · 霜陨领主    /event/thursday       ║')
     print('║  周六 · 猎城战      /event/saturday       ║')
     print('║  总名单             /all                  ║')
+    print('║  历史档案           /history              ║')
     print(f'║  地址: http://localhost:{str(PORT).ljust(22)}║')
     print('║  每周日 00:00 自动归档重置                 ║')
     print('╚═══════════════════════════════════════════╝')
