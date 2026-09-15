@@ -4,210 +4,58 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>诡秘之主 · 活动报名</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="/style.css">
 </head>
-<body>
-    <div class="app">
-        <!-- 背景装饰 -->
-        <div class="bg-decoration">
-            <div class="orb orb-1"></div>
-            <div class="orb orb-2"></div>
-            <div class="orb orb-3"></div>
+<body class="home-page">
+    <div class="stars-bg"></div>
+    <div class="container home-container">
+        <div class="home-header">
+            <div class="logo-icon">🎭</div>
+            <h1 class="home-title">诡秘之主 · 活动报名</h1>
+            <p class="home-subtitle">塔罗会 · 帮会活动中心</p>
         </div>
 
-        <!-- 首页 / 创建房间 -->
-        <div id="home-page" class="page active">
-            <div class="container">
-                <div class="logo-section">
-                    <div class="logo-icon">
-                        <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <circle cx="50" cy="50" r="45" stroke="url(#grad1)" stroke-width="2" opacity="0.6"/>
-                            <circle cx="50" cy="50" r="35" stroke="url(#grad1)" stroke-width="1.5" opacity="0.4"/>
-                            <path d="M50 20 L50 80 M20 50 L80 50" stroke="url(#grad1)" stroke-width="1.5" opacity="0.3"/>
-                            <circle cx="50" cy="50" r="15" fill="url(#grad2)" opacity="0.8"/>
-                            <defs>
-                                <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
-                                    <stop offset="0%" style="stop-color:#a855f7"/>
-                                    <stop offset="100%" style="stop-color:#3b82f6"/>
-                                </linearGradient>
-                                <radialGradient id="grad2" cx="50%" cy="50%" r="50%">
-                                    <stop offset="0%" style="stop-color:#c084fc"/>
-                                    <stop offset="100%" style="stop-color:#6366f1"/>
-                                </radialGradient>
-                            </defs>
-                        </svg>
-                    </div>
-                    <h1 class="app-title">塔罗会 · 活动报名</h1>
-                    <p class="app-subtitle">愚者议会 · 活动签到系统</p>
-                </div>
+        <div class="home-cards">
+            <a href="/event/thursday" class="event-card thursday-card">
+                <div class="card-day">周四</div>
+                <div class="card-title">霜陨领主</div>
+                <div class="card-time">🕗 晚上 8:00</div>
+                <div class="card-count" id="thursdayCount">-- 人报名</div>
+                <div class="card-arrow">→</div>
+            </a>
 
-                <div class="card">
-                    <h3 class="card-title">加入房间</h3>
-                    <div class="input-group">
-                        <input type="text" id="join-room-code" placeholder="输入房间号" maxlength="8" class="input">
-                        <button id="btn-join" class="btn btn-primary">加入</button>
-                    </div>
-                </div>
+            <a href="/event/saturday" class="event-card saturday-card">
+                <div class="card-day">周六</div>
+                <div class="card-title">猎城战</div>
+                <div class="card-time">🕗 晚上 8:00</div>
+                <div class="card-count" id="saturdayCount">-- 人报名</div>
+                <div class="card-arrow">→</div>
+            </a>
 
-                <div class="card">
-                    <h3 class="card-title">创建房间</h3>
-                    <div class="input-group">
-                        <input type="text" id="create-room-name" placeholder="房间名称（选填）" maxlength="50" class="input">
-                        <button id="btn-create" class="btn btn-secondary">创建</button>
-                    </div>
-                </div>
-
-                <div class="tip-text">
-                    💡 房间 7 天无人访问自动清理
-                </div>
-            </div>
+            <a href="/all" class="event-card all-card">
+                <div class="card-day">全部</div>
+                <div class="card-title">总名单</div>
+                <div class="card-time">📋 查看所有报名</div>
+                <div class="card-count" id="allCount">-- 人登记</div>
+                <div class="card-arrow">→</div>
+            </a>
         </div>
 
-        <!-- 房间页面 -->
-        <div id="room-page" class="page">
-            <div class="room-header">
-                <button id="btn-back" class="btn-icon" title="返回">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M19 12H5M12 19l-7-7 7-7"/>
-                    </svg>
-                </button>
-                <div class="room-info">
-                    <h2 id="room-name" class="room-name">活动报名</h2>
-                    <div class="room-code-wrap">
-                        <span class="room-code-label">房间号:</span>
-                        <span id="room-code" class="room-code">------</span>
-                        <button id="btn-copy-code" class="btn-copy-mini" title="复制房间号">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <rect x="9" y="9" width="13" height="13" rx="2"/>
-                                <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
-                            </svg>
-                        </button>
-                    </div>
-                </div>
-                <div class="conn-status" id="conn-status" title="连接状态">
-                    <span class="status-dot"></span>
-                </div>
-            </div>
-
-            <div class="room-content">
-                <!-- 统计卡片 -->
-                <div class="stats-row">
-                    <div class="stat-card stat-total">
-                        <div class="stat-value" id="stat-total">0</div>
-                        <div class="stat-label">总报名</div>
-                    </div>
-                    <div class="stat-card stat-thu">
-                        <div class="stat-value" id="stat-thu">0</div>
-                        <div class="stat-label">周四 20:00</div>
-                    </div>
-                    <div class="stat-card stat-sat">
-                        <div class="stat-value" id="stat-sat">0</div>
-                        <div class="stat-label">周六 20:00</div>
-                    </div>
-                </div>
-
-                <!-- 职业分布 -->
-                <div class="profession-stats" id="profession-stats">
-                    <!-- 动态生成 -->
-                </div>
-
-                <!-- 操作按钮组 -->
-                <div class="action-buttons">
-                    <button id="btn-batch-import" class="btn btn-outline">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                            <polyline points="17 8 12 3 7 8"/>
-                            <line x1="12" y1="3" x2="12" y2="15"/>
-                        </svg>
-                        批量导入
-                    </button>
-                    <button id="btn-copy-list" class="btn btn-outline">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <rect x="9" y="9" width="13" height="13" rx="2"/>
-                            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
-                        </svg>
-                        复制名单
-                    </button>
-                </div>
-
-                <!-- 报名表单 -->
-                <div class="card signup-form-card">
-                    <h3 class="card-title">我要报名</h3>
-                    <div class="form-row">
-                        <input type="text" id="input-name" placeholder="输入游戏昵称" maxlength="20" class="input">
-                    </div>
-                    <div class="form-row">
-                        <select id="select-profession" class="input select-input">
-                            <option value="">选择职业</option>
-                            <option value="战士">⚔️ 战士</option>
-                            <option value="占卜家">🔮 占卜家</option>
-                            <option value="窥秘人">👁️ 窥秘人</option>
-                            <option value="观众（奶）">💚 观众（奶）</option>
-                            <option value="学徒">📖 学徒</option>
-                            <option value="歌颂者">🎵 歌颂者</option>
-                        </select>
-                    </div>
-                    <div class="checkbox-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="check-thursday">
-                            <span class="checkbox-custom"></span>
-                            <span class="checkbox-text">周四 20:00</span>
-                        </label>
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="check-saturday">
-                            <span class="checkbox-custom"></span>
-                            <span class="checkbox-text">周六 20:00</span>
-                        </label>
-                    </div>
-                    <button id="btn-signup" class="btn btn-primary btn-full">确认报名</button>
-                </div>
-
-                <!-- 成员列表 -->
-                <div class="members-section">
-                    <div class="section-header">
-                        <h3>报名名单</h3>
-                        <span class="member-count" id="member-count">0 人</span>
-                    </div>
-                    <div class="members-list" id="members-list">
-                        <!-- 动态生成 -->
-                    </div>
-                    <div class="empty-state" id="empty-state" style="display:none;">
-                        <div class="empty-icon">✨</div>
-                        <p>暂无成员报名</p>
-                        <p class="empty-sub">快成为第一个报名的人吧</p>
-                    </div>
-                </div>
-            </div>
+        <div class="home-footer">
+            <p>实时同步 · 数据自动更新</p>
         </div>
-
-        <!-- 批量导入弹窗 -->
-        <div id="import-modal" class="modal">
-            <div class="modal-overlay"></div>
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h3>批量导入名单</h3>
-                    <button class="modal-close" id="btn-close-import">✕</button>
-                </div>
-                <div class="modal-body">
-                    <p class="modal-tip">
-                        每行一个成员，格式：<br>
-                        <code>姓名 职业 周四 周六</code><br>
-                        支持空格、逗号、顿号分隔
-                    </p>
-                    <textarea id="import-text" class="textarea" placeholder="例：&#10;张三 战士 是 是&#10;李四 占卜家 1 0&#10;王五 观众（奶） 周四 周六&#10;赵六 学徒"></textarea>
-                    <div class="import-result" id="import-result" style="display:none;"></div>
-                </div>
-                <div class="modal-footer">
-                    <button class="btn btn-outline" id="btn-cancel-import">取消</button>
-                    <button class="btn btn-primary" id="btn-do-import">确认导入</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Toast 提示 -->
-        <div id="toast" class="toast"></div>
     </div>
 
-    <script src="app.js"></script>
+    <script>
+        // 加载各活动人数
+        fetch('/api/members')
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('thursdayCount').textContent = data.totals.thursday + ' 人报名';
+                document.getElementById('saturdayCount').textContent = data.totals.saturday + ' 人报名';
+                document.getElementById('allCount').textContent = data.totals.total + ' 人登记';
+            })
+            .catch(() => {});
+    </script>
 </body>
 </html>

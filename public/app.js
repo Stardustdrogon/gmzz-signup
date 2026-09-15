@@ -1,564 +1,398 @@
-// ===== 诡秘之主 · 活动报名系统 前端逻辑 =====
+// 活动报名系统 - 前端逻辑
+// 支持活动详情页 (/event/xxx) 和总名单页 (/all)
 
-const PROFESSIONS = [
-    { name: '战士', icon: '⚔️' },
-    { name: '占卜家', icon: '🔮' },
-    { name: '窥秘人', icon: '👁️' },
-    { name: '观众（奶）', icon: '💚' },
-    { name: '学徒', icon: '📖' },
-    { name: '歌颂者', icon: '🎵' },
-];
+const PROFESSIONS = ['战士', '占卜家', '窥秘人', '观众（奶）', '学徒', '歌颂者'];
+const PROF_ICONS = {
+    '战士': '⚔️',
+    '占卜家': '🔮',
+    '窥秘人': '👁️',
+    '观众（奶）': '💚',
+    '学徒': '📖',
+    '歌颂者': '🎵'
+};
 
-// 状态
-let currentRoom = null;
-let members = [];
-let sseSource = null;
+const EVENT_CONFIG = {
+    thursday: { key: 'thursday', title: '霜陨领主', day: '周四', time: '晚上 8:00', color: '#8b5cf6' },
+    saturday: { key: 'saturday', title: '猎城战', day: '周六', time: '晚上 8:00', color: '#3b82f6' }
+};
 
-// DOM 元素
-const $ = (id) => document.getElementById(id);
+let currentEvent = null; // 'thursday' / 'saturday' / 'all'
+let currentFilter = 'all';
+let membersCache = [];
+let selectedProfession = null;
 
-// ===== 工具函数 =====
-function showToast(message, type = '') {
-    const toast = $('toast');
-    toast.textContent = message;
-    toast.className = 'toast show ' + type;
-    setTimeout(() => {
-        toast.classList.remove('show');
-    }, 2500);
-}
-
-function showPage(pageId) {
-    document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
-    $(pageId).classList.add('active');
-}
-
-function getProfessionIcon(professionName) {
-    const p = PROFESSIONS.find((x) => x.name === professionName);
-    return p ? p.icon : '👤';
-}
-
-function copyToClipboard(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        return navigator.clipboard.writeText(text);
-    }
-    // 降级方案
-    return new Promise((resolve, reject) => {
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-        try {
-            document.execCommand('copy');
-            resolve();
-        } catch (e) {
-            reject(e);
-        }
-        document.body.removeChild(textarea);
-    });
-}
-
-// ===== 首页逻辑 =====
-function initHomePage() {
-    $('btn-create').addEventListener('click', createRoom);
-    $('btn-join').addEventListener('click', joinRoom);
-    $('create-room-name').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') createRoom();
-    });
-    $('join-room-code').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') joinRoom();
-    });
-}
-
-async function createRoom() {
-    const roomName = $('create-room-name').value.trim();
-    try {
-        const res = await fetch('/api/rooms', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ roomName }),
-        });
-        const data = await res.json();
-        if (data.success) {
-            const code = data.room.roomCode;
-            showToast('房间创建成功！');
-            loadRoom(code);
-        } else {
-            showToast(data.error || '创建失败', 'error');
-        }
-    } catch (e) {
-        showToast('网络错误，请重试', 'error');
-    }
-}
-
-async function joinRoom() {
-    const code = $('join-room-code').value.trim().toUpperCase();
-    if (!code) {
-        showToast('请输入房间号', 'error');
-        return;
-    }
-    loadRoom(code);
-}
-
-// ===== 房间页面逻辑 =====
-async function loadRoom(roomCode) {
-    try {
-        const res = await fetch(`/api/rooms/${roomCode}`);
-        const data = await res.json();
-        if (res.status === 404) {
-            showToast('房间不存在', 'error');
-            return;
-        }
-        if (!data.success) {
-            showToast(data.error || '加载失败', 'error');
-            return;
-        }
-
-        currentRoom = data.room;
-        members = data.members;
-
-        // 更新 URL
-        history.pushState({ roomCode }, '', `#${roomCode}`);
-
-        // 渲染页面
-        renderRoom(data);
-        showPage('room-page');
-
-        // 连接 SSE
-        connectSSE(roomCode);
-    } catch (e) {
-        console.error('加载房间失败:', e);
-        showToast('加载失败，请重试', 'error');
-    }
-}
-
-function renderRoom(data) {
-    $('room-name').textContent = data.room.roomName;
-    $('room-code').textContent = data.room.roomCode;
-
-    // 统计
-    $('stat-total').textContent = data.totals.total;
-    $('stat-thu').textContent = data.totals.thursday;
-    $('stat-sat').textContent = data.totals.saturday;
-    $('member-count').textContent = `${data.totals.total} 人`;
-
-    // 职业分布
-    renderProfessionStats(data.stats);
-
-    // 成员列表
-    renderMembersList(data.members);
-}
-
-function renderProfessionStats(stats) {
-    const container = $('profession-stats');
-    container.innerHTML = '';
-
-    PROFESSIONS.forEach((p) => {
-        const s = stats[p.name] || { total: 0, thursday: 0, saturday: 0 };
-        const div = document.createElement('div');
-        div.className = 'profession-stat';
-        div.innerHTML = `
-            <div class="profession-icon">${p.icon}</div>
-            <div class="profession-name">${p.name}</div>
-            <div class="profession-count">
-                ${s.total}
-                <span class="sub-count">四${s.thursday}/六${s.saturday}</span>
-            </div>
-        `;
-        container.appendChild(div);
-    });
-}
-
-function renderMembersList(memberList) {
-    const container = $('members-list');
-    const emptyState = $('empty-state');
-
-    if (memberList.length === 0) {
-        container.innerHTML = '';
-        emptyState.style.display = 'block';
+// ============ 活动详情页初始化 ============
+function initEventPage(eventKey) {
+    currentEvent = eventKey;
+    const evt = EVENT_CONFIG[eventKey];
+    if (!evt) {
+        document.body.innerHTML = '<p>活动不存在</p>';
         return;
     }
 
-    emptyState.style.display = 'none';
-    container.innerHTML = '';
+    // 设置页面标题
+    document.getElementById('pageTitle').textContent = `${evt.day} ${evt.title} · 报名`;
+    document.getElementById('eventBadge').textContent = `${evt.day} · ${evt.title}`;
+    document.getElementById('eventBadge').style.background = evt.color + '20';
+    document.getElementById('eventBadge').style.color = evt.color;
+    document.getElementById('eventTitle').textContent = evt.title;
+    document.getElementById('eventMeta').textContent = `${evt.day} · ${evt.time}`;
+    document.getElementById('eventHeader').style.background = `linear-gradient(135deg, ${evt.color}30, transparent)`;
 
-    // 按职业分组排序
-    const sorted = [...memberList].sort((a, b) => {
-        const profOrder = PROFESSIONS.map((p) => p.name);
-        const pa = profOrder.indexOf(a.profession);
-        const pb = profOrder.indexOf(b.profession);
-        if (pa !== pb) return pa - pb;
-        return a.name.localeCompare(b.name, 'zh-CN');
-    });
+    // 默认勾选当前活动
+    document.getElementById('checkThursday').checked = (eventKey === 'thursday');
+    document.getElementById('checkSaturday').checked = (eventKey === 'saturday');
 
-    sorted.forEach((member) => {
-        const item = document.createElement('div');
-        item.className = 'member-item';
-        item.dataset.id = member.id;
+    // 显示双场统计
+    document.getElementById('bothStat').style.display = 'flex';
 
-        const thuClass = member.attendThursday ? 'thu' : 'inactive';
-        const satClass = member.attendSaturday ? 'sat' : 'inactive';
+    // 显示筛选按钮
+    document.getElementById('listFilter').style.display = 'flex';
 
-        item.innerHTML = `
-            <div class="member-avatar">${getProfessionIcon(member.profession)}</div>
-            <div class="member-info">
-                <div class="member-name">${escapeHtml(member.name)}</div>
-                <div class="member-profession">${member.profession}</div>
-            </div>
-            <div class="member-days">
-                <span class="day-badge ${thuClass}">周四</span>
-                <span class="day-badge ${satClass}">周六</span>
-            </div>
-            <button class="member-delete" data-id="${member.id}" title="删除">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="3 6 5 6 21 6"/>
-                    <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-                </svg>
-            </button>
-        `;
-        container.appendChild(item);
-    });
-
-    // 绑定删除事件
-    container.querySelectorAll('.member-delete').forEach((btn) => {
-        btn.addEventListener('click', (e) => {
-            const id = btn.dataset.id;
-            const member = members.find((m) => m.id == id);
-            if (member && confirm(`确定要删除 ${member.name} 吗？`)) {
-                deleteMember(id);
-            }
+    // 筛选事件
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentFilter = btn.dataset.filter;
+            renderMemberList();
         });
     });
-}
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// 更新统计（在增删成员后）
-function updateStats() {
-    const total = members.length;
-    const thu = members.filter((m) => m.attendThursday).length;
-    const sat = members.filter((m) => m.attendSaturday).length;
-
-    $('stat-total').textContent = total;
-    $('stat-thu').textContent = thu;
-    $('stat-sat').textContent = sat;
-    $('member-count').textContent = `${total} 人`;
-
-    // 更新职业分布
-    const stats = {};
-    PROFESSIONS.forEach((p) => {
-        stats[p.name] = { total: 0, thursday: 0, saturday: 0 };
-    });
-    members.forEach((m) => {
-        if (stats[m.profession]) {
-            stats[m.profession].total++;
-            if (m.attendThursday) stats[m.profession].thursday++;
-            if (m.attendSaturday) stats[m.profession].saturday++;
-        }
-    });
-    renderProfessionStats(stats);
-}
-
-// ===== 报名功能 =====
-async function submitSignup() {
-    const name = $('input-name').value.trim();
-    const profession = $('select-profession').value;
-    const attendThursday = $('check-thursday').checked;
-    const attendSaturday = $('check-saturday').checked;
-
-    if (!name) {
-        showToast('请输入游戏昵称', 'error');
-        return;
-    }
-    if (!profession) {
-        showToast('请选择职业', 'error');
-        return;
-    }
-    if (!attendThursday && !attendSaturday) {
-        showToast('请至少选择一个活动时间', 'error');
-        return;
-    }
-
-    try {
-        const res = await fetch(`/api/rooms/${currentRoom.roomCode}/members`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, profession, attendThursday, attendSaturday }),
+    // 职业选择
+    document.querySelectorAll('.prof-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.prof-btn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            selectedProfession = btn.dataset.prof;
         });
-        const data = await res.json();
-        if (data.success) {
-            showToast('报名成功！', 'success');
-            // 清空输入
-            $('input-name').value = '';
-            $('select-profession').value = '';
-            $('check-thursday').checked = false;
-            $('check-saturday').checked = false;
-            // 本地更新（SSE 也会推送）
-            upsertMember(data.member);
-            renderMembersList(members);
-            updateStats();
-        } else {
-            showToast(data.error || '报名失败', 'error');
-        }
-    } catch (e) {
-        showToast('网络错误', 'error');
-    }
+    });
+
+    // 表单提交
+    document.getElementById('signupForm').addEventListener('submit', handleSignupSubmit);
+
+    // 加载数据 + SSE
+    loadMembers();
+    connectSSE();
 }
 
-function upsertMember(member) {
-    const idx = members.findIndex((m) => m.id === member.id);
-    if (idx >= 0) {
-        members[idx] = member;
+// ============ 总名单页初始化 ============
+function initAllPage() {
+    currentEvent = 'all';
+
+    // 筛选事件
+    document.querySelectorAll('.filter-bar .filter-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.filter-bar .filter-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentFilter = btn.dataset.filter;
+            renderMemberList();
+        });
+    });
+
+    loadMembers();
+    connectSSE();
+}
+
+// ============ 加载成员数据 ============
+function loadMembers() {
+    let url = '/api/members';
+    if (currentEvent === 'thursday' || currentEvent === 'saturday') {
+        url += '?event=' + currentEvent;
+    }
+
+    fetch(url)
+        .then(r => r.json())
+        .then(data => {
+            membersCache = data.members;
+            renderAll(data);
+        })
+        .catch(err => {
+            showToast('加载失败，请刷新', 'error');
+        });
+}
+
+// ============ 渲染全部 ============
+function renderAll(data) {
+    // 统计数字
+    if (currentEvent === 'all') {
+        document.getElementById('totalNum').textContent = data.totals.total;
+        document.getElementById('thuNum').textContent = data.totals.thursday;
+        document.getElementById('satNum').textContent = data.totals.saturday;
+        document.getElementById('bothNum').textContent = data.totals.both;
     } else {
-        // 也可能名字相同但ID不同（UPSERT），检查名字
-        const nameIdx = members.findIndex((m) => m.name === member.name);
-        if (nameIdx >= 0) {
-            members[nameIdx] = member;
-        } else {
-            members.push(member);
-        }
+        document.getElementById('totalNum').textContent = data.totals.total;
+        document.getElementById('bothNum').textContent = data.totals.both;
+    }
+
+    // 职业统计
+    renderProfStats(data.stats);
+
+    // 名单
+    renderMemberList();
+}
+
+// ============ 渲染职业统计 ============
+function renderProfStats(stats) {
+    const container = document.getElementById('profStats');
+    container.innerHTML = '';
+    for (const prof of PROFESSIONS) {
+        const s = stats[prof] || { total: 0 };
+        const bar = document.createElement('div');
+        bar.className = 'prof-stat-item';
+        const percent = s.total > 0 ? Math.max(s.total * 8, 30) : 0;
+        bar.innerHTML = `
+            <div class="prof-stat-head">
+                <span class="prof-stat-name">${PROF_ICONS[prof] || ''} ${prof}</span>
+                <span class="prof-stat-num">${s.total} 人</span>
+            </div>
+            <div class="prof-stat-bar">
+                <div class="prof-stat-fill" style="width:${percent}%"></div>
+            </div>
+        `;
+        container.appendChild(bar);
     }
 }
 
-// ===== 删除成员 =====
-async function deleteMember(memberId) {
-    try {
-        const res = await fetch(`/api/rooms/${currentRoom.roomCode}/members/${memberId}`, {
-            method: 'DELETE',
-        });
-        const data = await res.json();
-        if (data.success) {
-            showToast('已删除', 'success');
-            members = members.filter((m) => m.id != memberId);
-            renderMembersList(members);
-            updateStats();
-        } else {
-            showToast(data.error || '删除失败', 'error');
-        }
-    } catch (e) {
-        showToast('网络错误', 'error');
+// ============ 渲染成员列表 ============
+function renderMemberList() {
+    const listEl = document.getElementById('memberList');
+    const countEl = document.getElementById('listCount');
+    if (!listEl) return;
+
+    // 筛选
+    let filtered = [...membersCache];
+    if (currentFilter === 'both') {
+        filtered = filtered.filter(m => m.attendBoth);
+    } else if (currentFilter === 'thursday' && currentEvent === 'all') {
+        filtered = filtered.filter(m => m.attendThursday && !m.attendSaturday);
+    } else if (currentFilter === 'saturday' && currentEvent === 'all') {
+        filtered = filtered.filter(m => m.attendSaturday && !m.attendThursday);
     }
-}
 
-// ===== 批量导入 =====
-function openImportModal() {
-    $('import-text').value = '';
-    $('import-result').style.display = 'none';
-    $('import-modal').classList.add('active');
-}
+    if (countEl) countEl.textContent = filtered.length;
 
-function closeImportModal() {
-    $('import-modal').classList.remove('active');
-}
-
-async function doBatchImport() {
-    const text = $('import-text').value.trim();
-    if (!text) {
-        showToast('请输入名单文本', 'error');
+    if (filtered.length === 0) {
+        listEl.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-icon">📭</div>
+                <p>暂无报名，来第一个报名吧！</p>
+            </div>
+        `;
         return;
     }
 
-    const btn = $('btn-do-import');
+    // 按职业分组
+    const grouped = {};
+    for (const prof of PROFESSIONS) grouped[prof] = [];
+    filtered.forEach(m => {
+        if (grouped[m.profession]) grouped[m.profession].push(m);
+    });
+
+    let html = '';
+    for (const prof of PROFESSIONS) {
+        const list = grouped[prof];
+        if (list.length === 0) continue;
+
+        html += `<div class="prof-group">
+            <div class="prof-group-header">
+                <span>${PROF_ICONS[prof] || ''} ${prof}</span>
+                <span class="prof-group-count">${list.length} 人</span>
+            </div>
+            <div class="prof-members">`;
+
+        list.forEach(m => {
+            const bothTag = currentEvent === 'all'
+                ? (m.attendBoth
+                    ? '<span class="tag tag-both">双场</span>'
+                    : (m.attendThursday
+                        ? '<span class="tag tag-thu">周四</span>'
+                        : '<span class="tag tag-sat">周六</span>'))
+                : (m.attendBoth ? '<span class="tag tag-both">双场</span>' : '');
+
+            html += `<div class="member-card ${m.attendBoth ? 'is-both' : ''}" data-id="${m.id}">
+                <div class="member-avatar" style="background: ${getProfColor(m.profession)}">
+                    ${m.name.charAt(0)}
+                </div>
+                <div class="member-info">
+                    <div class="member-name">${m.name} ${bothTag}</div>
+                    ${m.remark ? `<div class="member-remark">${m.remark}</div>` : ''}
+                </div>
+                <button class="member-delete" onclick="deleteMember(${m.id})" title="删除">×</button>
+            </div>`;
+        });
+
+        html += `</div></div>`;
+    }
+
+    listEl.innerHTML = html;
+}
+
+function getProfColor(prof) {
+    const colors = {
+        '战士': '#ef4444',
+        '占卜家': '#8b5cf6',
+        '窥秘人': '#6366f1',
+        '观众（奶）': '#22c55e',
+        '学徒': '#f59e0b',
+        '歌颂者': '#ec4899'
+    };
+    return colors[prof] || '#6b7280';
+}
+
+// ============ 报名提交 ============
+function handleSignupSubmit(e) {
+    e.preventDefault();
+    const name = document.getElementById('nameInput').value.trim();
+    const remark = document.getElementById('remarkInput').value.trim();
+    const thu = document.getElementById('checkThursday').checked;
+    const sat = document.getElementById('checkSaturday').checked;
+
+    if (!name) { showToast('请输入昵称', 'error'); return; }
+    if (!selectedProfession) { showToast('请选择职业', 'error'); return; }
+    if (!thu && !sat) { showToast('至少选一场活动', 'error'); return; }
+
+    let event_val;
+    if (thu && sat) event_val = 'both';
+    else if (thu) event_val = 'thursday';
+    else event_val = 'saturday';
+
+    const btn = document.getElementById('submitBtn');
     btn.disabled = true;
-    btn.textContent = '导入中...';
+    btn.textContent = '报名中...';
 
-    try {
-        const res = await fetch(`/api/rooms/${currentRoom.roomCode}/members/batch`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text }),
-        });
-        const data = await res.json();
-
-        const resultDiv = $('import-result');
-        resultDiv.style.display = 'block';
-
-        if (data.success) {
-            resultDiv.className = 'import-result';
-            let msg = `成功导入 ${data.imported} 人（共 ${data.totalLines} 行）`;
-            if (data.errors && data.errors.length > 0) {
-                msg += `\n失败 ${data.errors.length} 行：`;
-                data.errors.slice(0, 3).forEach((e) => {
-                    msg += `\n  第${e.line}行：${e.error}`;
-                });
-                if (data.errors.length > 3) {
-                    msg += `\n  ...还有 ${data.errors.length - 3} 行错误`;
-                }
-            }
-            resultDiv.textContent = msg;
-            resultDiv.style.whiteSpace = 'pre-line';
-
-            // 刷新列表
-            await refreshMembers();
+    fetch('/api/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, profession: selectedProfession, event: event_val, remark })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) {
+            showToast(data.error, 'error');
         } else {
-            resultDiv.className = 'import-result error';
-            resultDiv.textContent = data.error || '导入失败';
+            showToast(data.isNew ? '🎉 报名成功！' : '✅ 已更新报名信息', 'success');
+            document.getElementById('nameInput').value = '';
+            document.getElementById('remarkInput').value = '';
+            document.querySelectorAll('.prof-btn').forEach(b => b.classList.remove('selected'));
+            selectedProfession = null;
+            loadMembers();
         }
-    } catch (e) {
-        const resultDiv = $('import-result');
-        resultDiv.style.display = 'block';
-        resultDiv.className = 'import-result error';
-        resultDiv.textContent = '网络错误，请重试';
-    } finally {
+    })
+    .catch(() => showToast('网络错误', 'error'))
+    .finally(() => {
         btn.disabled = false;
-        btn.textContent = '确认导入';
-    }
-}
-
-// ===== 复制名单 =====
-async function copyList() {
-    try {
-        const res = await fetch(`/api/rooms/${currentRoom.roomCode}/export?format=text`);
-        const data = await res.json();
-        if (data.success) {
-            await copyToClipboard(data.content);
-            showToast('名单已复制到剪贴板', 'success');
-        } else {
-            showToast(data.error || '复制失败', 'error');
-        }
-    } catch (e) {
-        showToast('复制失败', 'error');
-    }
-}
-
-// ===== 刷新成员列表 =====
-async function refreshMembers() {
-    try {
-        const res = await fetch(`/api/rooms/${currentRoom.roomCode}`);
-        const data = await res.json();
-        if (data.success) {
-            members = data.members;
-            renderMembersList(members);
-            updateStats();
-        }
-    } catch (e) {
-        console.error('刷新失败:', e);
-    }
-}
-
-// ===== SSE 实时同步 =====
-function connectSSE(roomCode) {
-    // 关闭旧连接
-    if (sseSource) {
-        sseSource.close();
-        sseSource = null;
-    }
-
-    updateConnStatus('connecting');
-
-    try {
-        sseSource = new EventSource(`/api/rooms/${roomCode}/stream`);
-
-        sseSource.addEventListener('connected', () => {
-            updateConnStatus('connected');
-        });
-
-        sseSource.addEventListener('member_updated', (event) => {
-            const data = JSON.parse(event.data);
-            upsertMember(data.member);
-            renderMembersList(members);
-            updateStats();
-        });
-
-        sseSource.addEventListener('member_deleted', (event) => {
-            const data = JSON.parse(event.data);
-            members = members.filter((m) => m.id !== data.memberId);
-            renderMembersList(members);
-            updateStats();
-        });
-
-        sseSource.addEventListener('batch_imported', () => {
-            // 批量导入后刷新完整列表
-            refreshMembers();
-        });
-
-        sseSource.addEventListener('heartbeat', () => {
-            // 心跳，保持连接
-        });
-
-        sseSource.onerror = () => {
-            updateConnStatus('disconnected');
-            // 尝试重连（EventSource 会自动重连）
-            setTimeout(() => {
-                if (sseSource && sseSource.readyState === EventSource.OPEN) {
-                    updateConnStatus('connected');
-                }
-            }, 2000);
-        };
-    } catch (e) {
-        console.error('SSE 连接失败:', e);
-        updateConnStatus('disconnected');
-    }
-}
-
-function updateConnStatus(status) {
-    const dot = document.querySelector('.status-dot');
-    if (!dot) return;
-    dot.className = 'status-dot ' + (status === 'connected' ? '' : status);
-}
-
-// ===== 复制房间号 =====
-function copyRoomCode() {
-    if (currentRoom) {
-        copyToClipboard(currentRoom.roomCode);
-        showToast('房间号已复制', 'success');
-    }
-}
-
-// ===== 返回首页 =====
-function goHome() {
-    if (sseSource) {
-        sseSource.close();
-        sseSource = null;
-    }
-    currentRoom = null;
-    members = [];
-    showPage('home-page');
-    history.pushState({}, '', window.location.pathname);
-}
-
-// ===== 初始化 =====
-function init() {
-    initHomePage();
-
-    // 房间页面按钮
-    $('btn-back').addEventListener('click', goHome);
-    $('btn-signup').addEventListener('click', submitSignup);
-    $('btn-copy-code').addEventListener('click', copyRoomCode);
-    $('btn-batch-import').addEventListener('click', openImportModal);
-    $('btn-copy-list').addEventListener('click', copyList);
-    $('btn-close-import').addEventListener('click', closeImportModal);
-    $('btn-cancel-import').addEventListener('click', closeImportModal);
-    $('btn-do-import').addEventListener('click', doBatchImport);
-
-    // 点击遮罩关闭
-    document.querySelector('.modal-overlay').addEventListener('click', closeImportModal);
-
-    // 回车报名
-    $('input-name').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') submitSignup();
+        btn.textContent = '确认报名';
     });
+}
 
-    // 浏览器前进后退
-    window.addEventListener('popstate', (e) => {
-        if (e.state && e.state.roomCode) {
-            loadRoom(e.state.roomCode);
+// ============ 删除成员 ============
+function deleteMember(id) {
+    if (!confirm('确定要删除这个成员吗？')) return;
+    fetch('/api/members/' + id, { method: 'DELETE' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                showToast('已删除', 'success');
+                loadMembers();
+            } else {
+                showToast(data.error || '删除失败', 'error');
+            }
+        });
+}
+
+// ============ 批量导入 ============
+function showBatchModal() {
+    document.getElementById('batchModal').classList.add('show');
+}
+function hideBatchModal() {
+    document.getElementById('batchModal').classList.remove('show');
+}
+function doBatchImport() {
+    const text = document.getElementById('batchText').value.trim();
+    if (!text) { showToast('请输入名单内容', 'error'); return; }
+
+    fetch('/api/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, defaultEvent: currentEvent === 'thursday' ? 'thursday' : (currentEvent === 'saturday' ? 'saturday' : 'both') })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) {
+            showToast(data.error, 'error');
         } else {
-            goHome();
+            const msg = `✅ 成功导入 ${data.imported}/${data.totalLines} 人`;
+            showToast(msg, 'success');
+            if (data.errors && data.errors.length > 0) {
+                setTimeout(() => {
+                    alert('以下行导入失败：\n• ' + data.errors.slice(0, 5).join('\n• ') + (data.errors.length > 5 ? '\n...' : ''));
+                }, 300);
+            }
+            hideBatchModal();
+            document.getElementById('batchText').value = '';
+            loadMembers();
         }
     });
-
-    // 检查 URL hash 中的房间号
-    const hash = window.location.hash.replace('#', '').trim().toUpperCase();
-    if (hash && hash.length >= 4) {
-        loadRoom(hash);
-    }
 }
 
-// 启动
-document.addEventListener('DOMContentLoaded', init);
+// ============ 复制名单 ============
+function copyList() {
+    let eventParam = '';
+    if (currentEvent === 'thursday' || currentEvent === 'saturday') {
+        eventParam = '&event=' + currentEvent;
+    }
+    fetch('/api/export?format=text' + eventParam)
+        .then(r => r.json())
+        .then(data => {
+            navigator.clipboard.writeText(data.content).then(() => {
+                showToast('📋 名单已复制到剪贴板', 'success');
+            }).catch(() => {
+                // 降级方案
+                const ta = document.createElement('textarea');
+                ta.value = data.content;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                showToast('📋 名单已复制', 'success');
+            });
+        });
+}
+
+// ============ SSE 实时推送 ============
+function connectSSE() {
+    const es = new EventSource('/api/stream');
+
+    es.addEventListener('connected', () => {
+        console.log('SSE 已连接');
+    });
+
+    es.addEventListener('member_updated', (e) => {
+        // 成员新增/更新 -> 刷新
+        loadMembers();
+    });
+
+    es.addEventListener('member_removed', (e) => {
+        loadMembers();
+    });
+
+    es.addEventListener('batch_imported', (e) => {
+        loadMembers();
+        showToast('📥 有新的批量导入', 'info');
+    });
+
+    es.onerror = () => {
+        console.log('SSE 断开，自动重连...');
+    };
+}
+
+// ============ Toast ============
+let toastTimer = null;
+function showToast(msg, type = 'info') {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show ' + type;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 2500);
+}

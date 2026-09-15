@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>总名单 · 活动报名</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="stars-bg"></div>
+    <div class="container">
+        <!-- 顶部导航 -->
+        <div class="top-nav">
+            <a href="/" class="back-btn">← 返回</a>
+            <div class="event-badge all-badge">总名单</div>
+        </div>
+
+        <!-- 标题与统计 -->
+        <div class="event-header">
+            <h1 class="event-title">📋 全部报名名单</h1>
+            <p class="event-meta">实时更新 · 两场活动汇总</p>
+            <div class="event-stats">
+                <div class="stat-item">
+                    <span class="stat-num" id="totalNum">0</span>
+                    <span class="stat-label">总人数</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-num" id="thuNum">0</span>
+                    <span class="stat-label">周四</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-num" id="satNum">0</span>
+                    <span class="stat-label">周六</span>
+                </div>
+                <div class="stat-item stat-both">
+                    <span class="stat-num" id="bothNum">0</span>
+                    <span class="stat-label">双场</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 筛选 -->
+        <div class="filter-bar">
+            <button class="filter-btn active" data-filter="all">全部</button>
+            <button class="filter-btn" data-filter="both">🔥 双场</button>
+            <button class="filter-btn" data-filter="thursday">仅周四</button>
+            <button class="filter-btn" data-filter="saturday">仅周六</button>
+        </div>
+
+        <!-- 操作栏 -->
+        <div class="action-bar">
+            <button class="btn-secondary" onclick="showBatchModal()">📋 批量导入</button>
+            <button class="btn-secondary" onclick="copyList()">📄 复制名单</button>
+        </div>
+
+        <!-- 职业分布 -->
+        <div class="stats-section">
+            <h2 class="section-title">📊 职业分布</h2>
+            <div class="prof-stats" id="profStats"></div>
+        </div>
+
+        <!-- 名单 -->
+        <div class="list-section">
+            <div class="list-header">
+                <h2 class="section-title">👥 详细名单 <span class="list-count" id="listCount">0</span></h2>
+            </div>
+            <div class="member-list all-mode" id="memberList">
+                <div class="empty-state">
+                    <div class="empty-icon">📭</div>
+                    <p>暂无报名记录</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 图例 -->
+        <div class="legend-bar">
+            <span class="legend-item"><span class="legend-dot both"></span>双场参加</span>
+            <span class="legend-item"><span class="legend-dot thu-only"></span>仅周四</span>
+            <span class="legend-item"><span class="legend-dot sat-only"></span>仅周六</span>
+        </div>
+
+        <div class="footer-space"></div>
+    </div>
+
+    <!-- 批量导入弹窗 -->
+    <div class="modal" id="batchModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>批量导入名单</h3>
+                <button class="modal-close" onclick="hideBatchModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <p class="modal-tip">每行一人，格式：<br><code>姓名 职业 周四 周六</code><br>
+                职业写简称也能识别（如"奶"=观众奶）<br>
+                周四/周六用"是/否"或"1/0"表示</p>
+                <textarea id="batchText" placeholder="示例：&#10;张三 战士 是 是&#10;李四 奶 1 0&#10;王五 占卜家 周四 周六"></textarea>
+                <div class="modal-actions">
+                    <button class="btn-secondary" onclick="hideBatchModal()">取消</button>
+                    <button class="btn-primary" onclick="doBatchImport()">确认导入</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+
+    <script src="/app.js"></script>
+    <script>
+        // 初始化总名单页
+        initAllPage();
+    </script>
+</body>
+</html>

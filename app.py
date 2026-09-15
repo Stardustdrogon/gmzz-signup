@@ -1,14 +1,14 @@
 # 诡秘之主 活动报名系统 - 后端服务 (Python + SQLite)
-# 功能：房间管理、成员报名、SSE 实时推送、批量导入、名单导出、自动清理
+# 固定两场活动：周四 霜陨领主 / 周六 猎城战
+# 功能：成员报名、SSE 实时推送、批量导入、总名单、导出
 
 import sqlite3
 import json
 import time
 import os
-import random
-import string
+import re
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Flask, request, jsonify, Response, send_from_directory
 from flask_cors import CORS
 
@@ -30,8 +30,26 @@ PORT = int(os.environ.get('PORT', 3000))
 # 职业列表
 PROFESSIONS = ['战士', '占卜家', '窥秘人', '观众（奶）', '学徒', '歌颂者']
 
-# SSE 客户端：room_code -> set of queue
-sse_clients = {}
+# 活动配置
+EVENTS = {
+    'thursday': {
+        'key': 'thursday',
+        'title': '霜陨领主',
+        'day': '周四',
+        'time': '晚上 8:00',
+        'color': '#8b5cf6'
+    },
+    'saturday': {
+        'key': 'saturday',
+        'title': '猎城战',
+        'day': '周六',
+        'time': '晚上 8:00',
+        'color': '#3b82f6'
+    }
+}
+
+# SSE 客户端集合
+sse_clients = set()
 sse_lock = threading.Lock()
 
 
@@ -40,33 +58,22 @@ def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA journal_mode=WAL')
-    conn.execute('PRAGMA foreign_keys=ON')
+    conn.execute('PRAGMA journal_mode=DELETE')
     conn.executescript('''
-        CREATE TABLE IF NOT EXISTS rooms (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            room_code TEXT UNIQUE NOT NULL,
-            room_name TEXT NOT NULL DEFAULT '活动报名',
-            created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-            last_accessed_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-        );
-
         CREATE TABLE IF NOT EXISTS members (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-            name TEXT NOT NULL,
+            name TEXT NOT NULL UNIQUE,
             profession TEXT NOT NULL CHECK (profession IN ('战士','占卜家','窥秘人','观众（奶）','学徒','歌颂者')),
             attend_thursday INTEGER NOT NULL DEFAULT 0,
             attend_saturday INTEGER NOT NULL DEFAULT 0,
+            remark TEXT DEFAULT '',
             created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-            updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-            UNIQUE(room_id, name)
+            updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
         );
 
-        CREATE INDEX IF NOT EXISTS idx_rooms_code ON rooms(room_code);
-        CREATE INDEX IF NOT EXISTS idx_rooms_last_accessed ON rooms(last_accessed_at);
-        CREATE INDEX IF NOT EXISTS idx_members_room ON members(room_id);
         CREATE INDEX IF NOT EXISTS idx_members_profession ON members(profession);
+        CREATE INDEX IF NOT EXISTS idx_members_thursday ON members(attend_thursday);
+        CREATE INDEX IF NOT EXISTS idx_members_saturday ON members(attend_saturday);
     ''')
     conn.commit()
     conn.close()
@@ -74,338 +81,254 @@ def init_db():
 
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA foreign_keys=ON')
     return conn
 
 
-def ts_to_iso(ts):
-    return datetime.fromtimestamp(ts).isoformat() + 'Z'
+def row_to_dict(row):
+    if row is None:
+        return None
+    d = dict(row)
+    d['attendThursday'] = bool(d.get('attend_thursday', 0))
+    d['attendSaturday'] = bool(d.get('attend_saturday', 0))
+    d.pop('attend_thursday', None)
+    d.pop('attend_saturday', None)
+    # 双场标记
+    d['attendBoth'] = d['attendThursday'] and d['attendSaturday']
+    return d
 
 
 # ===== SSE 工具 =====
-def broadcast(room_code, event, data):
-    """向房间内所有连接推送消息"""
+def broadcast(event, data):
+    """向所有连接推送消息"""
     msg = f'event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
     with sse_lock:
-        clients = sse_clients.get(room_code, set())
         dead = []
-        for q in clients:
+        for q in sse_clients:
             try:
                 q.put(msg)
             except Exception:
                 dead.append(q)
         for q in dead:
-            clients.discard(q)
-        if not clients:
-            sse_clients.pop(room_code, None)
+            sse_clients.discard(q)
 
 
-class ClientQueue:
-    """简单的消息队列，用于 SSE 推送"""
-    def __init__(self):
-        import queue
-        self.q = queue.Queue()
-
-    def put(self, msg):
-        self.q.put(msg)
-
-    def get(self, timeout=30):
-        return self.q.get(timeout=timeout)
-
-
-# ===== 房间 API =====
-def generate_room_code():
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-
-
-@app.route('/api/rooms', methods=['POST'])
-def create_room():
-    data = request.get_json() or {}
-    room_name = data.get('roomName', '活动报名') or '活动报名'
-
-    conn = get_db()
-    try:
-        for _ in range(10):
-            code = generate_room_code()
-            existing = conn.execute('SELECT id FROM rooms WHERE room_code = ?', (code,)).fetchone()
-            if not existing:
-                break
-        else:
-            return jsonify({'error': '无法生成唯一房间码'}), 500
-
-        cur = conn.execute(
-            'INSERT INTO rooms (room_code, room_name) VALUES (?, ?)',
-            (code, room_name)
-        )
-        conn.commit()
-        room_id = cur.lastrowid
-        row = conn.execute('SELECT created_at FROM rooms WHERE id = ?', (room_id,)).fetchone()
-
-        return jsonify({
-            'success': True,
-            'room': {
-                'id': room_id,
-                'roomCode': code,
-                'roomName': room_name,
-                'createdAt': ts_to_iso(row['created_at'])
-            }
-        })
-    finally:
-        conn.close()
-
-
-@app.route('/api/rooms/<room_code>', methods=['GET'])
-def get_room(room_code):
-    conn = get_db()
-    try:
-        # 更新访问时间
-        conn.execute(
-            "UPDATE rooms SET last_accessed_at = strftime('%s', 'now') WHERE room_code = ?",
-            (room_code,)
-        )
-        conn.commit()
-
-        room = conn.execute(
-            'SELECT id, room_code, room_name, created_at FROM rooms WHERE room_code = ?',
-            (room_code,)
-        ).fetchone()
-
-        if not room:
-            return jsonify({'error': '房间不存在'}), 404
-
-        member_rows = conn.execute(
-            '''SELECT id, name, profession, attend_thursday, attend_saturday,
-               created_at, updated_at FROM members WHERE room_id = ?
-               ORDER BY created_at ASC''',
-            (room['id'],)
-        ).fetchall()
-
-        members = []
-        stats = {p: {'total': 0, 'thursday': 0, 'saturday': 0} for p in PROFESSIONS}
-        thu_total = 0
-        sat_total = 0
-
-        for m in member_rows:
-            thu = bool(m['attend_thursday'])
-            sat = bool(m['attend_saturday'])
-            members.append({
-                'id': m['id'],
-                'name': m['name'],
-                'profession': m['profession'],
-                'attendThursday': thu,
-                'attendSaturday': sat,
-                'createdAt': ts_to_iso(m['created_at']),
-                'updatedAt': ts_to_iso(m['updated_at'])
-            })
-            if m['profession'] in stats:
-                stats[m['profession']]['total'] += 1
-                if thu:
-                    stats[m['profession']]['thursday'] += 1
-                    thu_total += 1
-                if sat:
-                    stats[m['profession']]['saturday'] += 1
-                    sat_total += 1
-
-        return jsonify({
-            'success': True,
-            'room': {
-                'id': room['id'],
-                'roomCode': room['room_code'],
-                'roomName': room['room_name'],
-                'createdAt': ts_to_iso(room['created_at'])
-            },
-            'members': members,
-            'stats': stats,
-            'totals': {
-                'total': len(members),
-                'thursday': thu_total,
-                'saturday': sat_total
-            },
-            'professions': PROFESSIONS
-        })
-    finally:
-        conn.close()
-
-
-# ===== SSE 实时推送 =====
-@app.route('/api/rooms/<room_code>/stream')
-def sse_stream(room_code):
-    conn = get_db()
-    try:
-        room = conn.execute('SELECT id FROM rooms WHERE room_code = ?', (room_code,)).fetchone()
-        if not room:
-            return jsonify({'error': '房间不存在'}), 404
-
-        conn.execute(
-            "UPDATE rooms SET last_accessed_at = strftime('%s', 'now') WHERE room_code = ?",
-            (room_code,)
-        )
-        conn.commit()
-    finally:
-        conn.close()
+# ===== SSE 流 =====
+@app.route('/api/stream')
+def stream():
+    import queue
+    q = queue.Queue(maxsize=32)
+    with sse_lock:
+        sse_clients.add(q)
 
     def generate():
-        client = ClientQueue()
-        with sse_lock:
-            if room_code not in sse_clients:
-                sse_clients[room_code] = set()
-            sse_clients[room_code].add(client)
-
         try:
-            # 连接确认
-            yield f'event: connected\ndata: {{"message":"已连接实时同步"}}\n\n'
-
-            last_heartbeat = time.time()
+            # 先发送初始化事件
+            yield 'event: connected\ndata: {"status":"ok"}\n\n'
+            # 心跳
             while True:
                 try:
-                    msg = client.get(timeout=15)
+                    msg = q.get(timeout=30)
                     yield msg
-                except Exception:
-                    # 超时，发心跳
-                    now = time.time()
-                    if now - last_heartbeat >= 25:
-                        yield f'event: heartbeat\ndata: {{"time":{int(now*1000)}}}\n\n'
-                        last_heartbeat = now
+                except queue.Empty:
+                    yield ': ping\n\n'
+        except GeneratorExit:
+            pass
         finally:
             with sse_lock:
-                if room_code in sse_clients:
-                    sse_clients[room_code].discard(client)
-                    if not sse_clients[room_code]:
-                        del sse_clients[room_code]
+                sse_clients.discard(q)
 
-    return Response(
-        generate(),
-        mimetype='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'X-Accel-Buffering': 'no',
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache',
+                             'X-Accel-Buffering': 'no',
+                             'Connection': 'keep-alive'})
+
+
+# ===== 活动配置 =====
+@app.route('/api/events')
+def get_events():
+    return jsonify({'events': list(EVENTS.values())})
+
+
+# ===== 获取总名单 =====
+@app.route('/api/members')
+def get_all_members():
+    event_key = request.args.get('event')  # thursday / saturday / 空=全部
+
+    conn = get_db()
+    query = 'SELECT * FROM members WHERE 1=1'
+    params = []
+
+    if event_key == 'thursday':
+        query += ' AND attend_thursday = 1'
+    elif event_key == 'saturday':
+        query += ' AND attend_saturday = 1'
+
+    query += ' ORDER BY '
+    # 按职业顺序排序
+    query += "CASE profession "
+    for i, p in enumerate(PROFESSIONS):
+        query += f"WHEN '{p}' THEN {i} "
+    query += "ELSE 99 END, name"
+
+    rows = conn.execute(query, params).fetchall()
+    members = [row_to_dict(r) for r in rows]
+
+    # 统计
+    totals = {
+        'total': len(members),
+        'thursday': sum(1 for m in members if m['attendThursday']),
+        'saturday': sum(1 for m in members if m['attendSaturday']),
+        'both': sum(1 for m in members if m['attendBoth']),
+        'onlyThursday': sum(1 for m in members if m['attendThursday'] and not m['attendSaturday']),
+        'onlySaturday': sum(1 for m in members if m['attendSaturday'] and not m['attendThursday']),
+    }
+
+    # 职业分布
+    stats = {}
+    for p in PROFESSIONS:
+        p_members = [m for m in members if m['profession'] == p]
+        stats[p] = {
+            'total': len(p_members),
+            'thursday': sum(1 for m in p_members if m['attendThursday']),
+            'saturday': sum(1 for m in p_members if m['attendSaturday']),
+            'both': sum(1 for m in p_members if m['attendBoth']),
         }
-    )
+
+    conn.close()
+    return jsonify({
+        'members': members,
+        'totals': totals,
+        'stats': stats
+    })
 
 
-# ===== 成员报名 =====
-@app.route('/api/rooms/<room_code>/members', methods=['POST'])
-def add_member(room_code):
-    data = request.get_json() or {}
+# ===== 报名 =====
+@app.route('/api/signup', methods=['POST'])
+def signup():
+    data = request.get_json()
     name = (data.get('name') or '').strip()
-    profession = data.get('profession') or ''
-    attend_thursday = 1 if data.get('attendThursday') else 0
-    attend_saturday = 1 if data.get('attendSaturday') else 0
+    profession = data.get('profession', '')
+    event_key = data.get('event')  # thursday / saturday / both
+    remark = (data.get('remark') or '').strip()
 
     if not name:
         return jsonify({'error': '请输入姓名'}), 400
     if profession not in PROFESSIONS:
-        return jsonify({'error': '请选择有效的职业'}), 400
+        return jsonify({'error': '请选择正确的职业'}), 400
+    if event_key not in ['thursday', 'saturday', 'both']:
+        return jsonify({'error': '请选择参加的活动'}), 400
 
     conn = get_db()
-    try:
-        room = conn.execute('SELECT id FROM rooms WHERE room_code = ?', (room_code,)).fetchone()
-        if not room:
-            return jsonify({'error': '房间不存在'}), 404
 
-        room_id = room['id']
+    # 查找是否已存在
+    existing = conn.execute('SELECT * FROM members WHERE name = ?', (name,)).fetchone()
 
-        # UPSERT
+    if existing:
+        # 更新：保留另一场的报名状态，更新当前场
+        thu = 1 if (existing['attend_thursday'] or event_key in ('thursday', 'both')) else 0
+        sat = 1 if (existing['attend_saturday'] or event_key in ('saturday', 'both')) else 0
         conn.execute(
-            '''INSERT INTO members (room_id, name, profession, attend_thursday, attend_saturday, updated_at)
-               VALUES (?, ?, ?, ?, ?, strftime('%s', 'now'))
-               ON CONFLICT(room_id, name) DO UPDATE SET
-                 profession = excluded.profession,
-                 attend_thursday = excluded.attend_thursday,
-                 attend_saturday = excluded.attend_saturday,
-                 updated_at = strftime('%s', 'now')''',
-            (room_id, name, profession, attend_thursday, attend_saturday)
+            '''UPDATE members SET profession = ?, attend_thursday = ?, attend_saturday = ?,
+               remark = ?, updated_at = strftime('%s', 'now') WHERE id = ?''',
+            (profession, thu, sat, remark, existing['id'])
         )
-        conn.commit()
-
-        row = conn.execute(
-            '''SELECT id, name, profession, attend_thursday, attend_saturday,
-               created_at, updated_at FROM members WHERE room_id = ? AND name = ?''',
-            (room_id, name)
-        ).fetchone()
-
-        member = {
-            'id': row['id'],
-            'name': row['name'],
-            'profession': row['profession'],
-            'attendThursday': bool(row['attend_thursday']),
-            'attendSaturday': bool(row['attend_saturday']),
-            'createdAt': ts_to_iso(row['created_at']),
-            'updatedAt': ts_to_iso(row['updated_at'])
-        }
-
-        conn.execute(
-            "UPDATE rooms SET last_accessed_at = strftime('%s', 'now') WHERE id = ?",
-            (room_id,)
-        )
-        conn.commit()
-
-        broadcast(room_code, 'member_updated', {'member': member})
-
-        return jsonify({'success': True, 'member': member})
-    finally:
-        conn.close()
-
-
-@app.route('/api/rooms/<room_code>/members/<int:member_id>', methods=['DELETE'])
-def delete_member(room_code, member_id):
-    conn = get_db()
-    try:
-        room = conn.execute('SELECT id FROM rooms WHERE room_code = ?', (room_code,)).fetchone()
-        if not room:
-            return jsonify({'error': '房间不存在'}), 404
-
+        member_id = existing['id']
+    else:
+        thu = 1 if event_key in ('thursday', 'both') else 0
+        sat = 1 if event_key in ('saturday', 'both') else 0
         cur = conn.execute(
-            'DELETE FROM members WHERE id = ? AND room_id = ?',
-            (member_id, room['id'])
+            '''INSERT INTO members (name, profession, attend_thursday, attend_saturday, remark)
+               VALUES (?, ?, ?, ?, ?)''',
+            (name, profession, thu, sat, remark)
         )
-        conn.commit()
+        member_id = cur.lastrowid
 
-        if cur.rowcount == 0:
-            return jsonify({'error': '成员不存在'}), 404
+    conn.commit()
+    member = row_to_dict(conn.execute('SELECT * FROM members WHERE id = ?', (member_id,)).fetchone())
+    conn.close()
 
-        conn.execute(
-            "UPDATE rooms SET last_accessed_at = strftime('%s', 'now') WHERE id = ?",
-            (room['id'],)
-        )
-        conn.commit()
+    # 推送
+    broadcast('member_updated', {'member': member})
 
-        broadcast(room_code, 'member_deleted', {'memberId': member_id})
+    return jsonify({'member': member, 'isNew': existing is None})
 
-        return jsonify({'success': True})
-    finally:
+
+# ===== 取消报名某场 =====
+@app.route('/api/members/<int:member_id>/cancel', methods=['POST'])
+def cancel_member(member_id):
+    data = request.get_json()
+    event_key = data.get('event')  # thursday / saturday
+
+    if event_key not in ['thursday', 'saturday']:
+        return jsonify({'error': '无效的活动'}), 400
+
+    conn = get_db()
+    member = conn.execute('SELECT * FROM members WHERE id = ?', (member_id,)).fetchone()
+    if not member:
         conn.close()
+        return jsonify({'error': '成员不存在'}), 404
+
+    if event_key == 'thursday':
+        conn.execute('UPDATE members SET attend_thursday = 0, updated_at = strftime("%s", "now") WHERE id = ?', (member_id,))
+    else:
+        conn.execute('UPDATE members SET attend_saturday = 0, updated_at = strftime("%s", "now") WHERE id = ?', (member_id,))
+
+    conn.commit()
+
+    # 如果两场都不参加了，删除记录
+    updated = conn.execute('SELECT * FROM members WHERE id = ?', (member_id,)).fetchone()
+    if updated['attend_thursday'] == 0 and updated['attend_saturday'] == 0:
+        conn.execute('DELETE FROM members WHERE id = ?', (member_id,))
+        conn.commit()
+        conn.close()
+        broadcast('member_removed', {'id': member_id})
+        return jsonify({'removed': True})
+
+    member_dict = row_to_dict(updated)
+    conn.close()
+    broadcast('member_updated', {'member': member_dict})
+    return jsonify({'member': member_dict, 'removed': False})
+
+
+# ===== 删除成员 =====
+@app.route('/api/members/<int:member_id>', methods=['DELETE'])
+def delete_member(member_id):
+    conn = get_db()
+    member = conn.execute('SELECT * FROM members WHERE id = ?', (member_id,)).fetchone()
+    if not member:
+        conn.close()
+        return jsonify({'error': '成员不存在'}), 404
+
+    conn.execute('DELETE FROM members WHERE id = ?', (member_id,))
+    conn.commit()
+    conn.close()
+
+    broadcast('member_removed', {'id': member_id})
+    return jsonify({'success': True})
 
 
 # ===== 批量导入 =====
-@app.route('/api/rooms/<room_code>/members/batch', methods=['POST'])
-def batch_import(room_code):
-    data = request.get_json() or {}
-    text = (data.get('text') or '').strip()
+@app.route('/api/batch', methods=['POST'])
+def batch_import():
+    data = request.get_json()
+    text = data.get('text', '')
+    default_event = data.get('defaultEvent', 'both')  # 默认导入到哪场
 
-    if not text:
-        return jsonify({'error': '请输入名单文本'}), 400
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    if not lines:
+        return jsonify({'error': '请输入名单内容'}), 400
 
     conn = get_db()
-    try:
-        room = conn.execute('SELECT id FROM rooms WHERE room_code = ?', (room_code,)).fetchone()
-        if not room:
-            return jsonify({'error': '房间不存在'}), 404
+    imported = []
+    errors = []
 
-        room_id = room['id']
-        lines = [l.strip() for l in text.split('\n') if l.strip()]
-        imported = []
-        errors = []
-
-        for i, line in enumerate(lines):
-            import re
+    for line in lines:
+        try:
             parts = [p for p in re.split(r'[\s,，、;；\t]+', line) if p]
-
             if len(parts) < 2:
-                errors.append({'line': i + 1, 'content': line, 'error': '格式不正确，至少需要姓名和职业'})
+                errors.append(f'格式错误: {line}')
                 continue
 
             name = parts[0]
@@ -417,215 +340,158 @@ def batch_import(room_code):
                 if p == prof_input or prof_input in p or prof_input in p.replace('（奶）', ''):
                     profession = p
                     break
-            if not profession and prof_input in ['奶', '奶妈', '治疗', '观众']:
-                profession = '观众（奶）'
-
             if not profession:
-                errors.append({'line': i + 1, 'content': line, 'error': f'职业「{prof_input}」不匹配'})
+                errors.append(f'无法识别职业「{prof_input}」: {line}')
                 continue
 
-            # 解析周四/周六
-            thu = 0
-            sat = 0
+            # 判断参加哪几场
+            thu = sat = 0
             if len(parts) >= 3:
                 t = parts[2].lower()
-                if t in ['1', '是', 'y', 'yes', 'true', '√', '✓', '周四', '四'] or re.search(r'周[四4]', t):
+                if t in ['1', '是', 'y', 'yes', 'true', '✓', '周四', '四'] or re.search(r'周[四4]', t):
                     thu = 1
+                if t in ['1', '是', 'y', 'yes', 'true', '✓', '周六', '六', '双', '都'] or re.search(r'周[六6]', t):
+                    sat = 1
             if len(parts) >= 4:
-                s = parts[3].lower()
-                if s in ['1', '是', 'y', 'yes', 'true', '√', '✓', '周六', '六'] or re.search(r'周[六6]', s):
-                    sat = 1
-            if len(parts) == 2:
-                if re.search(r'周[四4]', line):
+                t = parts[3].lower()
+                if t in ['1', '是', 'y', 'yes', 'true', '✓', '周四', '四'] or re.search(r'周[四4]', t):
                     thu = 1
-                if re.search(r'周[六6]', line):
+                if t in ['1', '是', 'y', 'yes', 'true', '✓', '周六', '六', '双', '都'] or re.search(r'周[六6]', t):
                     sat = 1
 
-            try:
+            # 如果没有明确指定，用默认
+            if thu == 0 and sat == 0:
+                if default_event == 'thursday':
+                    thu = 1
+                elif default_event == 'saturday':
+                    sat = 1
+                else:
+                    thu = sat = 1
+
+            # 插入或更新
+            existing = conn.execute('SELECT * FROM members WHERE name = ?', (name,)).fetchone()
+            if existing:
+                new_thu = existing['attend_thursday'] or thu
+                new_sat = existing['attend_saturday'] or sat
                 conn.execute(
-                    '''INSERT INTO members (room_id, name, profession, attend_thursday, attend_saturday, updated_at)
-                       VALUES (?, ?, ?, ?, ?, strftime('%s', 'now'))
-                       ON CONFLICT(room_id, name) DO UPDATE SET
-                         profession = excluded.profession,
-                         attend_thursday = excluded.attend_thursday,
-                         attend_saturday = excluded.attend_saturday,
-                         updated_at = strftime('%s', 'now')''',
-                    (room_id, name, profession, thu, sat)
+                    '''UPDATE members SET profession = ?, attend_thursday = ?, attend_saturday = ?,
+                       updated_at = strftime('%s', 'now') WHERE id = ?''',
+                    (profession, new_thu, new_sat, existing['id'])
                 )
+                row = conn.execute('SELECT * FROM members WHERE id = ?', (existing['id'],)).fetchone()
+            else:
+                cur = conn.execute(
+                    '''INSERT INTO members (name, profession, attend_thursday, attend_saturday)
+                       VALUES (?, ?, ?, ?)''',
+                    (name, profession, thu, sat)
+                )
+                row = conn.execute('SELECT * FROM members WHERE id = ?', (cur.lastrowid,)).fetchone()
 
-                row = conn.execute(
-                    '''SELECT id, name, profession, attend_thursday, attend_saturday
-                       FROM members WHERE room_id = ? AND name = ?''',
-                    (room_id, name)
-                ).fetchone()
+            imported.append(row_to_dict(row))
+        except Exception as e:
+            errors.append(f'{line}: {str(e)}')
 
-                imported.append({
-                    'id': row['id'],
-                    'name': row['name'],
-                    'profession': row['profession'],
-                    'attendThursday': bool(row['attend_thursday']),
-                    'attendSaturday': bool(row['attend_saturday'])
-                })
-            except Exception as e:
-                errors.append({'line': i + 1, 'content': line, 'error': str(e)})
+    conn.commit()
+    conn.close()
 
-        conn.commit()
+    # 推送刷新通知
+    broadcast('batch_imported', {'count': len(imported)})
 
-        conn.execute(
-            "UPDATE rooms SET last_accessed_at = strftime('%s', 'now') WHERE id = ?",
-            (room_id,)
-        )
-        conn.commit()
-
-        if imported:
-            broadcast(room_code, 'batch_imported', {'count': len(imported)})
-
-        return jsonify({
-            'success': True,
-            'imported': len(imported),
-            'totalLines': len(lines),
-            'errors': errors,
-            'importedMembers': imported
-        })
-    finally:
-        conn.close()
+    return jsonify({
+        'imported': len(imported),
+        'totalLines': len(lines),
+        'members': imported,
+        'errors': errors
+    })
 
 
 # ===== 导出名单 =====
-@app.route('/api/rooms/<room_code>/export', methods=['GET'])
-def export_room(room_code):
+@app.route('/api/export')
+def export_list():
     fmt = request.args.get('format', 'text')
+    event_key = request.args.get('event', '')  # thursday/saturday/空=全部
+
     conn = get_db()
-    try:
-        conn.execute(
-            "UPDATE rooms SET last_accessed_at = strftime('%s', 'now') WHERE room_code = ?",
-            (room_code,)
-        )
-        conn.commit()
+    rows = conn.execute('SELECT * FROM members ORDER BY name').fetchall()
+    members = [row_to_dict(r) for r in rows]
+    conn.close()
 
-        room = conn.execute(
-            'SELECT id, room_name FROM rooms WHERE room_code = ?',
-            (room_code,)
-        ).fetchone()
-        if not room:
-            return jsonify({'error': '房间不存在'}), 404
+    if event_key == 'thursday':
+        members = [m for m in members if m['attendThursday']]
+    elif event_key == 'saturday':
+        members = [m for m in members if m['attendSaturday']]
 
-        member_rows = conn.execute(
-            '''SELECT name, profession, attend_thursday, attend_saturday
-               FROM members WHERE room_id = ? ORDER BY profession, name''',
-            (room['id'],)
-        ).fetchall()
+    if fmt == 'json':
+        return jsonify({'members': members})
 
-        members = []
-        for m in member_rows:
-            members.append({
-                'name': m['name'],
-                'profession': m['profession'],
-                'attendThursday': bool(m['attend_thursday']),
-                'attendSaturday': bool(m['attend_saturday'])
-            })
+    # 文本格式
+    lines = []
 
-        output = ''
-        if fmt == 'csv':
-            output = '姓名,职业,周四,周六\n'
-            for m in members:
-                output += f"{m['name']},{m['profession']},{'是' if m['attendThursday'] else '否'},{'是' if m['attendSaturday'] else '否'}\n"
-        elif fmt == 'markdown':
-            output = f"## {room['room_name']} 报名名单\n\n"
-            output += f"共 {len(members)} 人报名\n\n"
-            output += '| 姓名 | 职业 | 周四20:00 | 周六20:00 |\n'
-            output += '|------|------|-----------|----------|\n'
-            for m in members:
-                thu = '✓' if m['attendThursday'] else '-'
-                sat = '✓' if m['attendSaturday'] else '-'
-                output += f"| {m['name']} | {m['profession']} | {thu} | {sat} |\n"
-            output += '\n## 职业分布\n\n'
-            for p in PROFESSIONS:
-                pm = [m for m in members if m['profession'] == p]
-                thu_c = sum(1 for m in pm if m['attendThursday'])
-                sat_c = sum(1 for m in pm if m['attendSaturday'])
-                output += f"- **{p}**：{len(pm)}人（周四{thu_c} / 周六{sat_c}）\n"
-            thu_total = sum(1 for m in members if m['attendThursday'])
-            sat_total = sum(1 for m in members if m['attendSaturday'])
-            output += f"\n**周四总计：{thu_total}人 | 周六总计：{sat_total}人**\n"
-        else:
-            output = f"【{room['room_name']}】报名名单\n"
-            output += f"共 {len(members)} 人报名\n"
-            output += '=' * 30 + '\n\n'
-            for p in PROFESSIONS:
-                pm = [m for m in members if m['profession'] == p]
-                if not pm:
-                    continue
-                output += f"【{p}】({len(pm)}人)\n"
-                for m in pm:
-                    days = []
-                    if m['attendThursday']:
-                        days.append('周四')
-                    if m['attendSaturday']:
-                        days.append('周六')
-                    output += f"  {m['name']} - { '、'.join(days) or '未选'}\n"
-                output += '\n'
-            thu_total = sum(1 for m in members if m['attendThursday'])
-            sat_total = sum(1 for m in members if m['attendSaturday'])
-            output += '=' * 30 + '\n'
-            output += f"周四 20:00：{thu_total} 人\n"
-            output += f"周六 20:00：{sat_total} 人\n"
+    # 周四
+    thu_members = [m for m in members if m['attendThursday']]
+    lines.append(f'【周四 · 霜陨领主】共 {len(thu_members)} 人')
+    for p in PROFESSIONS:
+        p_list = [m['name'] for m in thu_members if m['profession'] == p]
+        if p_list:
+            lines.append(f'  {p}（{len(p_list)}）：' + '、'.join(p_list))
+    lines.append('')
 
-        return jsonify({
-            'success': True,
-            'content': output,
-            'format': fmt
-        })
-    finally:
-        conn.close()
+    # 周六
+    sat_members = [m for m in members if m['attendSaturday']]
+    lines.append(f'【周六 · 猎城战】共 {len(sat_members)} 人')
+    for p in PROFESSIONS:
+        p_list = [m['name'] for m in sat_members if m['profession'] == p]
+        if p_list:
+            lines.append(f'  {p}（{len(p_list)}）：' + '、'.join(p_list))
+    lines.append('')
+
+    # 双场
+    both = [m for m in members if m['attendBoth']]
+    lines.append(f'【双场都参加】共 {len(both)} 人')
+    lines.append('  ' + '、'.join(m['name'] for m in both) if both else '  无')
+    lines.append('')
+
+    lines.append(f'总计：{len(members)} 人（周四 {len(thu_members)} / 周六 {len(sat_members)} / 双场 {len(both)}）')
+
+    content = '\n'.join(lines)
+    return jsonify({'content': content})
 
 
-# ===== 健康检查 =====
-@app.route('/api/health', methods=['GET'])
-def health():
-    return jsonify({'status': 'ok', 'time': datetime.now().isoformat() + 'Z'})
-
-
-# ===== 静态文件 =====
+# ===== 页面路由 =====
 @app.route('/')
 def index():
     return send_from_directory('public', 'index.html')
 
+@app.route('/event/<event_key>')
+def event_page(event_key):
+    return send_from_directory('public', 'event.html')
 
-# ===== 7 天自动清理 =====
-def cleanup_worker():
-    """后台线程：每小时清理一次过期房间"""
-    while True:
-        try:
-            seven_days_ago = int(time.time()) - 7 * 24 * 3600
-            conn = get_db()
-            cur = conn.execute('DELETE FROM rooms WHERE last_accessed_at < ?', (seven_days_ago,))
-            conn.commit()
-            conn.close()
-            if cur.rowcount > 0:
-                print(f'[清理] 已删除 {cur.rowcount} 个过期房间')
-        except Exception as e:
-            print(f'[清理] 出错: {e}')
-        time.sleep(3600)  # 1 小时
+@app.route('/all')
+def all_page():
+    return send_from_directory('public', 'all.html')
+
+@app.route('/api/health')
+def health():
+    return jsonify({'status': 'ok', 'time': int(time.time())})
 
 
 # ===== 启动 =====
 if __name__ == '__main__':
     init_db()
-
-    # 启动清理线程
-    t = threading.Thread(target=cleanup_worker, daemon=True)
-    t.start()
-
     print()
-    print('╔══════════════════════════════════════╗')
-    print('║  诡秘之主 活动报名系统 (SQLite)     ║')
-    print('║  服务器已启动                        ║')
-    print(f'║  地址: http://localhost:{str(PORT).ljust(19)}║')
-    print('╚══════════════════════════════════════╝')
+    print('╔═══════════════════════════════════════════╗')
+    print('║  诡秘之主 · 活动报名系统 v2.0            ║')
+    print('╠═══════════════════════════════════════════╣')
+    print('║  周四 · 霜陨领主    /event/thursday       ║')
+    print('║  周六 · 猎城战      /event/saturday       ║')
+    print('║  总名单             /all                  ║')
+    print(f'║  地址: http://localhost:{str(PORT).ljust(22)}║')
+    print('╚═══════════════════════════════════════════╝')
     print()
-
-    # 使用 waitress 作为生产级 WSGI 服务器
-    import waitress
-    print(f'服务监听端口: {PORT}')
-    waitress.serve(app, host='0.0.0.0', port=PORT, threads=8)
+    try:
+        import waitress
+        print(f'使用 waitress 启动服务，端口: {PORT}')
+        waitress.serve(app, host='0.0.0.0', port=PORT, threads=8)
+    except ImportError:
+        print(f'使用 Flask 开发服务器，端口: {PORT}')
+        app.run(host='0.0.0.0', port=PORT, threaded=True)

@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: gmzz-signup
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python app.py"
+    envVars:
+      - key: PORT
+        value: "10000"
