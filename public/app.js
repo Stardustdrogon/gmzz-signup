@@ -2,6 +2,8 @@
 // 支持活动详情页 (/event/xxx) 和总名单页 (/all)
 
 const PROFESSIONS = ['战士', '占卜家', '窥秘人', '观众（奶）', '学徒', '歌颂者'];
+let isAdmin = false;
+let adminPwd = '';
 const PROF_ICONS = {
     '战士': '⚔️',
     '占卜家': '🔮',
@@ -213,7 +215,7 @@ function renderMemberList() {
                     <div class="member-name">${m.name} ${tag}</div>
                     ${m.remark ? `<div class="member-remark">${m.remark}</div>` : ''}
                 </div>
-                <button class="member-delete" onclick="deleteMember(${m.id})" title="删除">×</button>
+                ${isAdmin ? `<button class="member-delete" onclick="deleteMember(${m.id})" title="删除">×</button>` : ''}
             </div>`;
         });
 
@@ -281,7 +283,11 @@ function handleEventSignupSubmit(e) {
 // ============ 删除成员 ============
 function deleteMember(id) {
     if (!confirm('确定要删除这个成员吗？')) return;
-    fetch('/api/members/' + id, { method: 'DELETE' })
+    fetch('/api/members/' + id, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: adminPwd })
+    })
         .then(r => r.json())
         .then(data => {
             if (data.success) {
@@ -291,6 +297,47 @@ function deleteMember(id) {
                 showToast(data.error || '删除失败', 'error');
             }
         });
+}
+
+// ============ 管理员模式 ============
+function toggleAdmin() {
+    if (isAdmin) {
+        isAdmin = false;
+        adminPwd = '';
+        const btn = document.getElementById('adminBtn');
+        if (btn) { btn.textContent = '🔓 管理'; btn.classList.remove('admin-on'); }
+        showToast('已退出管理模式', 'info');
+        loadMembers();
+        // 隐藏管理专属按钮
+        const adminOnly = document.querySelectorAll('.admin-only');
+        adminOnly.forEach(el => el.style.display = 'none');
+        return;
+    }
+
+    const pwd = prompt('请输入管理员密码：');
+    if (!pwd) return;
+
+    fetch('/api/admin/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pwd })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            isAdmin = true;
+            adminPwd = pwd;
+            const btn = document.getElementById('adminBtn');
+            if (btn) { btn.textContent = '🔒 管理中'; btn.classList.add('admin-on'); }
+            showToast('已进入管理模式', 'success');
+            loadMembers();
+            // 显示管理专属按钮
+            const adminOnly = document.querySelectorAll('.admin-only');
+            adminOnly.forEach(el => el.style.display = '');
+        } else {
+            showToast(data.error || '密码错误', 'error');
+        }
+    });
 }
 
 // ============ 批量导入（总名单页）============
@@ -307,7 +354,7 @@ function doBatchImport() {
     fetch('/api/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, defaultEvent: 'both' })
+        body: JSON.stringify({ text, defaultEvent: 'both', password: adminPwd })
     })
     .then(r => r.json())
     .then(data => {

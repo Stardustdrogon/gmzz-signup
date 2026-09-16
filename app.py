@@ -40,6 +40,7 @@ else:
 
 PORT = int(os.environ.get('PORT', 3000))
 PROFESSIONS = ['战士', '占卜家', '窥秘人', '观众（奶）', '学徒', '歌颂者']
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin123')
 
 EVENTS = {
     'thursday': {
@@ -396,6 +397,43 @@ def get_events():
     return jsonify({'events': list(EVENTS.values()), 'week': week})
 
 
+# 管理员密码验证
+@app.route('/api/admin/verify', methods=['POST'])
+def admin_verify():
+    data = request.get_json()
+    pwd = data.get('password', '')
+    if pwd == ADMIN_PASSWORD:
+        return jsonify({'success': True})
+    return jsonify({'error': '密码错误'}), 401
+
+
+# 删除成员（需要管理员密码）
+@app.route('/api/members/<int:member_id>', methods=['DELETE'])
+def delete_member(member_id):
+    data = request.get_json(silent=True) or {}
+    pwd = data.get('password', '')
+    if pwd != ADMIN_PASSWORD:
+        return jsonify({'error': '无权限操作，请输入管理员密码'}), 403
+
+    conn = get_db()
+    cur = db_execute(conn,
+        'SELECT * FROM members WHERE id = %s' if USE_POSTGRES else 'SELECT * FROM members WHERE id = ?',
+        (member_id,))
+    member = db_fetchone(cur)
+    if not member:
+        conn.close()
+        return jsonify({'error': '成员不存在'}), 404
+
+    db_execute(conn,
+        'DELETE FROM members WHERE id = %s' if USE_POSTGRES else 'DELETE FROM members WHERE id = ?',
+        (member_id,))
+    conn.commit()
+    conn.close()
+
+    broadcast('member_removed', {'id': member_id})
+    return jsonify({'success': True})
+
+
 # 名单
 @app.route('/api/members')
 def get_all_members():
@@ -520,34 +558,15 @@ def signup():
     return jsonify({'member': member, 'isNew': is_new})
 
 
-# 删除成员
-@app.route('/api/members/<int:member_id>', methods=['DELETE'])
-def delete_member(member_id):
-    conn = get_db()
-    cur = db_execute(conn,
-        'SELECT * FROM members WHERE id = %s' if USE_POSTGRES else 'SELECT * FROM members WHERE id = ?',
-        (member_id,))
-    member = db_fetchone(cur)
-    if not member:
-        conn.close()
-        return jsonify({'error': '成员不存在'}), 404
-
-    db_execute(conn,
-        'DELETE FROM members WHERE id = %s' if USE_POSTGRES else 'DELETE FROM members WHERE id = ?',
-        (member_id,))
-    conn.commit()
-    conn.close()
-
-    broadcast('member_removed', {'id': member_id})
-    return jsonify({'success': True})
-
-
-# 批量导入
+# 批量导入（需要管理员密码）
 @app.route('/api/batch', methods=['POST'])
 def batch_import():
     data = request.get_json()
     text = data.get('text', '')
     default_event = data.get('defaultEvent', 'both')
+    pwd = data.get('password', '')
+    if pwd != ADMIN_PASSWORD:
+        return jsonify({'error': '无权限操作，请输入管理员密码'}), 403
 
     lines = [l.strip() for l in text.split('\n') if l.strip()]
     if not lines:

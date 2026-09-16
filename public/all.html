@@ -13,6 +13,7 @@
         <div class="top-nav">
             <a href="/" class="back-btn">← 返回</a>
             <div class="event-badge all-badge">总名单</div>
+            <button id="adminBtn" class="admin-btn" onclick="toggleAdmin()">🔓 管理</button>
         </div>
 
         <!-- 标题与统计 -->
@@ -49,7 +50,7 @@
 
         <!-- 操作栏 -->
         <div class="action-bar">
-            <button class="btn-secondary" onclick="showBatchModal()">📋 批量导入</button>
+            <button class="btn-secondary admin-only" style="display:none" onclick="showBatchModal()">📋 批量导入</button>
             <button class="btn-secondary" onclick="copyList()">📄 复制名单</button>
         </div>
 

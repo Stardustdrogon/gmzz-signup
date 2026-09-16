@@ -91,6 +91,25 @@ body {
     background: rgba(255,255,255,0.1);
     color: var(--text-primary);
 }
+.admin-btn {
+    color: var(--text-secondary);
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.1);
+    font-size: 13px;
+    padding: 5px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.admin-btn:hover {
+    background: rgba(255,255,255,0.1);
+    color: var(--text-primary);
+}
+.admin-btn.admin-on {
+    color: #fbbf24;
+    border-color: rgba(251,191,36,0.3);
+    background: rgba(251,191,36,0.1);
+}
 .event-badge {
     padding: 6px 14px;
     border-radius: 20px;
