@@ -335,8 +335,7 @@ def stream():
 
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache',
-                             'X-Accel-Buffering': 'no',
-                             'Connection': 'keep-alive'})
+                             'X-Accel-Buffering': 'no'})
 
 
 # 周信息
