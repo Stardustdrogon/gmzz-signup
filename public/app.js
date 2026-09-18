@@ -58,7 +58,48 @@ function initEventPage(eventKey) {
 
     // 加载数据 + SSE
     loadMembers();
+    loadEventDeadline(eventKey);
     connectSSE();
+}
+
+// ============ 活动页截止时间 & 倒计时 ============
+function loadEventDeadline(eventKey) {
+    fetch('/api/week')
+        .then(r => r.json())
+        .then(data => {
+            const deadlineKey = eventKey + 'Deadline';
+            const deadlineTs = data[deadlineKey];
+            if (deadlineTs) {
+                startEventCountdown(deadlineTs);
+            }
+        });
+}
+
+function startEventCountdown(targetTs) {
+    function update() {
+        const el = document.getElementById('countdownTime');
+        if (!el) return;
+        const now = Math.floor(Date.now() / 1000);
+        const diff = targetTs - now;
+        const container = document.getElementById('eventCountdown');
+        if (diff <= 0) {
+            el.textContent = '已截止';
+            el.classList.add('countdown-closed');
+            if (container) container.classList.add('countdown-closed-wrap');
+            return;
+        }
+        const d = Math.floor(diff / 86400);
+        const h = Math.floor((diff % 86400) / 3600);
+        const m = Math.floor((diff % 3600) / 60);
+        const s = diff % 60;
+        if (d > 0) {
+            el.textContent = d + '天 ' + String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+        } else {
+            el.textContent = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+        }
+    }
+    update();
+    setInterval(update, 1000);
 }
 
 // ============ 总名单页初始化 ============

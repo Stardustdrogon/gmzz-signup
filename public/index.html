@@ -23,6 +23,7 @@
                 <div class="card-icon">❄️</div>
                 <div class="card-title">周四 · 霜陨领主</div>
                 <div class="card-time">晚上 7:00 开战</div>
+                <div class="card-countdown" id="thuCountdown">--:--:--</div>
                 <div class="card-deadline" id="thuDeadline">报名截止: --</div>
                 <div class="card-count"><span id="thuCount">0</span> 人已报名</div>
             </div>
@@ -32,6 +33,7 @@
                 <div class="card-icon">🏹</div>
                 <div class="card-title">周六 · 猎城战</div>
                 <div class="card-time">晚上 7:00 开战</div>
+                <div class="card-countdown" id="satCountdown">--:--:--</div>
                 <div class="card-deadline" id="satDeadline">报名截止: --</div>
                 <div class="card-count"><span id="satCount">0</span> 人已报名</div>
             </div>
@@ -87,7 +89,35 @@
                     document.getElementById('thuDeadline').textContent = '报名截止: ' + data.thursdayDeadlineStr;
                     document.getElementById('satDeadline').textContent = '报名截止: ' + data.saturdayDeadlineStr;
                     document.getElementById('nextReset').textContent = data.nextResetStr;
+                    // 启动倒计时
+                    startCountdown('thuCountdown', data.thursdayDeadline);
+                    startCountdown('satCountdown', data.saturdayDeadline);
                 });
+        }
+
+        function startCountdown(elementId, targetTs) {
+            function update() {
+                const el = document.getElementById(elementId);
+                if (!el) return;
+                const now = Math.floor(Date.now() / 1000);
+                const diff = targetTs - now;
+                if (diff <= 0) {
+                    el.textContent = '已截止';
+                    el.classList.add('countdown-closed');
+                    return;
+                }
+                const d = Math.floor(diff / 86400);
+                const h = Math.floor((diff % 86400) / 3600);
+                const m = Math.floor((diff % 3600) / 60);
+                const s = diff % 60;
+                if (d > 0) {
+                    el.textContent = d + '天 ' + String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+                } else {
+                    el.textContent = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+                }
+            }
+            update();
+            setInterval(update, 1000);
         }
 
         // SSE 实时更新

@@ -349,6 +349,21 @@ body {
     margin-bottom: 10px;
     opacity: 0.9;
 }
+.card-countdown {
+    font-size: 20px;
+    font-weight: 700;
+    color: #fbbf24;
+    font-family: 'Courier New', monospace;
+    letter-spacing: 1px;
+    margin: 4px 0;
+    text-shadow: 0 0 10px rgba(251,191,36,0.3);
+}
+.card-countdown.countdown-closed {
+    color: #ef4444;
+    text-shadow: 0 0 10px rgba(239,68,68,0.3);
+    font-size: 16px;
+    font-weight: 600;
+}
 .card-count {
     font-size: 14px;
     color: var(--text-secondary);
@@ -395,7 +410,39 @@ body {
 .event-meta {
     color: var(--text-secondary);
     font-size: 14px;
-    margin-bottom: 20px;
+    margin-bottom: 12px;
+}
+.event-countdown {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 20px;
+    background: rgba(251,191,36,0.1);
+    border: 1px solid rgba(251,191,36,0.3);
+    border-radius: 12px;
+    margin-bottom: 16px;
+}
+.countdown-label {
+    font-size: 13px;
+    color: #fbbf24;
+    opacity: 0.8;
+}
+.countdown-time {
+    font-size: 22px;
+    font-weight: 700;
+    color: #fbbf24;
+    font-family: 'Courier New', monospace;
+    letter-spacing: 1px;
+    text-shadow: 0 0 12px rgba(251,191,36,0.4);
+}
+.event-countdown.countdown-closed-wrap {
+    background: rgba(239,68,68,0.1);
+    border-color: rgba(239,68,68,0.3);
+}
+.countdown-time.countdown-closed {
+    color: #ef4444;
+    font-size: 18px;
+    text-shadow: 0 0 12px rgba(239,68,68,0.4);
 }
 .event-stats {
     display: flex;
