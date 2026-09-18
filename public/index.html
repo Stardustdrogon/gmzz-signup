@@ -6,73 +6,110 @@
     <title>诡秘之主 · 活动报名</title>
     <link rel="stylesheet" href="/style.css">
 </head>
-<body class="home-page">
+<body>
     <div class="stars-bg"></div>
-    <div class="container home-container">
+    <div class="container">
+        <!-- 头部 -->
         <div class="home-header">
-            <div class="logo-icon">🎭</div>
-            <h1 class="home-title">诡秘之主 · 活动报名</h1>
-            <p class="home-subtitle">塔罗会 · 帮会活动中心 · 第 <span id="currentWeek">--</span> 周</p>
+            <h1 class="home-title">⚔️ 活动报名</h1>
+            <p class="home-subtitle">愚者议会 · 每周活动报名系统</p>
+            <div class="week-badge-home" id="weekBadge">第 -- 周</div>
         </div>
 
-        <div class="home-grid">
-            <a href="/event/thursday" class="event-card thursday-card">
-                <div class="card-day">周四</div>
-                <div class="card-title">霜陨领主</div>
-                <div class="card-time">🕗 晚上 8:00</div>
-                <div class="card-count" id="thursdayCount">-- 人报名</div>
-                <div class="card-arrow">→</div>
-            </a>
+        <!-- 三宫格 -->
+        <div class="home-grid three-col">
+            <!-- 周四 -->
+            <div class="home-card card-thursday" onclick="goEvent('thursday')">
+                <div class="card-icon">❄️</div>
+                <div class="card-title">周四 · 霜陨领主</div>
+                <div class="card-time">晚上 7:00 开战</div>
+                <div class="card-deadline" id="thuDeadline">报名截止: --</div>
+                <div class="card-count"><span id="thuCount">0</span> 人已报名</div>
+            </div>
 
-            <a href="/event/saturday" class="event-card saturday-card">
-                <div class="card-day">周六</div>
-                <div class="card-title">猎城战</div>
-                <div class="card-time">🕗 晚上 8:00</div>
-                <div class="card-count" id="saturdayCount">-- 人报名</div>
-                <div class="card-arrow">→</div>
-            </a>
+            <!-- 周六 -->
+            <div class="home-card card-saturday" onclick="goEvent('saturday')">
+                <div class="card-icon">🏹</div>
+                <div class="card-title">周六 · 猎城战</div>
+                <div class="card-time">晚上 7:00 开战</div>
+                <div class="card-deadline" id="satDeadline">报名截止: --</div>
+                <div class="card-count"><span id="satCount">0</span> 人已报名</div>
+            </div>
 
-            <a href="/all" class="event-card all-card">
-                <div class="card-day">全部</div>
+            <!-- 总名单 -->
+            <div class="home-card card-all" onclick="location.href='/all.html'">
+                <div class="card-icon">📋</div>
                 <div class="card-title">总名单</div>
-                <div class="card-time">📋 查看所有报名</div>
-                <div class="card-count" id="allCount">-- 人登记</div>
-                <div class="card-arrow">→</div>
-            </a>
-
-            <a href="/history" class="event-card history-card">
-                <div class="card-day">档案</div>
-                <div class="card-title">历史记录</div>
-                <div class="card-time">📚 过往周次回顾</div>
-                <div class="card-count" id="historyCount">-- 周档案</div>
-                <div class="card-arrow">→</div>
-            </a>
+                <div class="card-time">两场活动汇总</div>
+                <div class="card-deadline">实时更新</div>
+                <div class="card-count"><span id="totalCount">0</span> 人报名</div>
+            </div>
         </div>
 
-        <div class="home-footer">
-            <p>实时同步 · 每周日 00:00 自动归档</p>
+        <!-- 底部操作 -->
+        <div class="home-actions">
+            <button class="btn-secondary" onclick="downloadExcel()">📊 下载本周 Excel</button>
+        </div>
+
+        <!-- 下次重置 -->
+        <div class="reset-info">
+            下次重置: <span id="nextReset">--</span>
         </div>
     </div>
 
+    <script src="/app.js"></script>
     <script>
-        // 加载数据
-        fetch('/api/members')
-            .then(r => r.json())
-            .then(data => {
-                document.getElementById('currentWeek').textContent = data.week;
-                document.getElementById('thursdayCount').textContent = data.totals.thursday + ' 人报名';
-                document.getElementById('saturdayCount').textContent = data.totals.saturday + ' 人报名';
-                document.getElementById('allCount').textContent = data.totals.total + ' 人登记';
-            })
-            .catch(() => {});
+        // 首页逻辑
+        function goEvent(key) {
+            location.href = '/event.html?event=' + key;
+        }
 
-        // 加载历史档案数量
-        fetch('/api/archives')
-            .then(r => r.json())
-            .then(data => {
-                document.getElementById('historyCount').textContent = data.weeks.length + ' 周档案';
-            })
-            .catch(() => {});
+        function downloadExcel() {
+            window.location.href = '/api/excel';
+        }
+
+        function loadHomeStats() {
+            fetch('/api/members')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('thuCount').textContent = data.totals.thursday;
+                    document.getElementById('satCount').textContent = data.totals.saturday;
+                    document.getElementById('totalCount').textContent = data.totals.total;
+                    document.getElementById('weekBadge').textContent = '第 ' + data.week + ' 周';
+                });
+        }
+
+        function loadDeadlines() {
+            fetch('/api/week')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('weekBadge').textContent = '第 ' + data.week + ' 周';
+                    document.getElementById('thuDeadline').textContent = '报名截止: ' + data.thursdayDeadlineStr;
+                    document.getElementById('satDeadline').textContent = '报名截止: ' + data.saturdayDeadlineStr;
+                    document.getElementById('nextReset').textContent = data.nextResetStr;
+                });
+        }
+
+        // SSE 实时更新
+        function connectSSE() {
+            const es = new EventSource('/api/stream');
+            es.addEventListener('member_updated', () => loadHomeStats());
+            es.addEventListener('member_removed', () => loadHomeStats());
+            es.addEventListener('batch_imported', () => loadHomeStats());
+            es.addEventListener('week_reset', (e) => {
+                const d = JSON.parse(e.data);
+                alert('进入第 ' + d.newWeek + ' 周！' + (d.message || ''));
+                loadHomeStats();
+                loadDeadlines();
+            });
+            es.onerror = () => {
+                setTimeout(connectSSE, 3000);
+            };
+        }
+
+        loadHomeStats();
+        loadDeadlines();
+        connectSSE();
     </script>
 </body>
 </html>
