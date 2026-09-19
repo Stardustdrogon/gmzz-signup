@@ -23,6 +23,7 @@
                 <div class="card-icon">❄️</div>
                 <div class="card-title">周四 · 霜陨领主</div>
                 <div class="card-time">晚上 7:00 开战</div>
+                <div class="card-week" id="thuWeek">第 -- 周</div>
                 <div class="card-countdown" id="thuCountdown">--:--:--</div>
                 <div class="card-deadline" id="thuDeadline">报名截止: --</div>
                 <div class="card-count"><span id="thuCount">0</span> 人已报名</div>
@@ -33,6 +34,7 @@
                 <div class="card-icon">🏹</div>
                 <div class="card-title">周六 · 猎城战</div>
                 <div class="card-time">晚上 7:00 开战</div>
+                <div class="card-week" id="satWeek">第 -- 周</div>
                 <div class="card-countdown" id="satCountdown">--:--:--</div>
                 <div class="card-deadline" id="satDeadline">报名截止: --</div>
                 <div class="card-count"><span id="satCount">0</span> 人已报名</div>
@@ -77,7 +79,7 @@
                     document.getElementById('thuCount').textContent = data.totals.thursday;
                     document.getElementById('satCount').textContent = data.totals.saturday;
                     document.getElementById('totalCount').textContent = data.totals.total;
-                    document.getElementById('weekBadge').textContent = '第 ' + data.week + ' 周';
+                    document.getElementById('weekBadge').textContent = data.weekLabel || '第 ' + data.week + ' 周';
                 });
         }
 
@@ -85,7 +87,9 @@
             fetch('/api/week')
                 .then(r => r.json())
                 .then(data => {
-                    document.getElementById('weekBadge').textContent = '第 ' + data.week + ' 周';
+                    document.getElementById('weekBadge').textContent = data.weekLabel;
+                    document.getElementById('thuWeek').textContent = data.weekLabel;
+                    document.getElementById('satWeek').textContent = data.weekLabel;
                     document.getElementById('thuDeadline').textContent = '报名截止: ' + data.thursdayDeadlineStr;
                     document.getElementById('satDeadline').textContent = '报名截止: ' + data.saturdayDeadlineStr;
                     document.getElementById('nextReset').textContent = data.nextResetStr;

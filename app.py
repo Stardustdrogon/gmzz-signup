@@ -422,8 +422,16 @@ def get_week_info():
     next_reset = get_next_reset_time()
     thu_info = get_deadline_info('thursday')
     sat_info = get_deadline_info('saturday')
+    # 本周日期范围（周日到周六）
+    now = datetime.now()
+    days_since_sunday = (now.weekday() + 1) % 7
+    this_sunday = (now - timedelta(days=days_since_sunday)).replace(hour=0, minute=0, second=0, microsecond=0)
+    this_saturday = this_sunday + timedelta(days=6)
+    week_range_str = this_sunday.strftime('%m/%d') + '-' + this_saturday.strftime('%m/%d')
     return jsonify({
         'week': week,
+        'weekRange': week_range_str,
+        'weekLabel': f'第 {week} 周（{week_range_str}）',
         'nextReset': next_reset,
         'nextResetStr': datetime.fromtimestamp(next_reset).strftime('%Y-%m-%d %H:%M'),
         'thursdayDeadline': thu_info['deadline_ts'],

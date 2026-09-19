@@ -135,7 +135,7 @@ function loadMembers() {
 
             // 更新周数显示
             const weekBadge = document.getElementById('weekBadge');
-            if (weekBadge) weekBadge.textContent = `第 ${data.week} 周`;
+            if (weekBadge) weekBadge.textContent = data.weekLabel || `第 ${data.week} 周`;
 
             renderAll(data);
         })
@@ -453,7 +453,7 @@ function connectSSE() {
         if (data.week) {
             currentWeek = data.week;
             const weekBadge = document.getElementById('weekBadge');
-            if (weekBadge) weekBadge.textContent = `第 ${data.week} 周`;
+            if (weekBadge) weekBadge.textContent = data.weekLabel || `第 ${data.week} 周`;
         }
         console.log('SSE 已连接，第', data.week, '周');
     });
