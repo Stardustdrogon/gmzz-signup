@@ -13,6 +13,9 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, Response, send_from_directory, send_file
 from flask_cors import CORS
 from io import BytesIO
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 app = Flask(__name__, static_folder='public', static_url_path='')
 CORS(app)
@@ -158,8 +161,8 @@ def get_current_week():
     if start_sunday_ts:
         start_ts = int(start_sunday_ts)
     else:
-        # 默认：从 2026-08-23 周日开始算第1周
-        start_ts = int(datetime(2026, 8, 23, 0, 0, 0).timestamp())
+        # 默认：从 2026-09-13 周日开始算第1周
+        start_ts = int(datetime(2026, 9, 13, 0, 0, 0).timestamp())
     diff_days = (this_sunday.timestamp() - start_ts) / 86400
     week = int(diff_days / 7) + 1
     return max(1, week)
@@ -216,20 +219,94 @@ def broadcast(event_name, data):
             sse_clients.discard(q)
 
 # ========== Excel 生成 ==========
-def generate_excel(week_num):
-    """生成指定周的 Excel 文件，返回文件路径"""
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.utils import get_column_letter
+def _build_profession_sheet(ws, members, header_font, cell_font, center_align, thin_border):
+    """构建以职业分列的排布表，昵称单元格按职业上色"""
+    # 按职业分组
+    prof_members = {}
+    for p in PROFESSIONS:
+        prof_members[p] = [m for m in members if m['profession'] == p]
 
+    max_count = max(len(v) for v in prof_members.values()) if prof_members else 0
+
+    # 标题行
+    headers = []
+    for p in PROFESSIONS:
+        headers.append(p)
+        headers.append('')  # 评分列留空
+    ws.append(headers)
+
+    # 表头样式
+    for col_idx, p in enumerate(PROFESSIONS):
+        name_col = col_idx * 2 + 1
+        score_col = col_idx * 2 + 2
+        color = PROF_COLORS[p]
+        fill = PatternFill(start_color=color, end_color=color, fill_type='solid')
+        for c in (name_col, score_col):
+            cell = ws.cell(row=1, column=c)
+            cell.font = header_font
+            cell.fill = fill
+            cell.alignment = center_align
+            cell.border = thin_border
+
+    # 填充成员
+    for row_idx in range(max_count):
+        for col_idx, p in enumerate(PROFESSIONS):
+            plist = prof_members[p]
+            name_col = col_idx * 2 + 1
+            score_col = col_idx * 2 + 2
+            if row_idx < len(plist):
+                m = plist[row_idx]
+                name_cell = ws.cell(row=row_idx + 2, column=name_col, value=m['name'])
+                # 昵称单元格按职业底色
+                light_color = _lighten_color(PROF_COLORS[p], 0.75)
+                name_fill = PatternFill(start_color=light_color, end_color=light_color, fill_type='solid')
+                name_cell.fill = name_fill
+            score_cell = ws.cell(row=row_idx + 2, column=score_col)
+            score_cell.border = thin_border
+
+    # 列宽
+    for col_idx in range(1, len(PROFESSIONS) * 2 + 1):
+        col_letter = get_column_letter(col_idx)
+        if col_idx % 2 == 1:
+            ws.column_dimensions[col_letter].width = 15
+        else:
+            ws.column_dimensions[col_letter].width = 8
+
+    # 边框与字体
+    for row in ws.iter_rows(min_row=1, max_row=max_count + 1, min_col=1, max_col=len(PROFESSIONS) * 2):
+        for cell in row:
+            cell.alignment = center_align
+            cell.border = thin_border
+            if cell.row > 1:
+                cell.font = cell_font
+
+    ws.row_dimensions[1].height = 28
+    for r in range(2, max_count + 2):
+        ws.row_dimensions[r].height = 22
+
+    return max_count
+
+
+def _lighten_color(hex_color, factor):
+    """将十六进制颜色变浅（factor 0-1，越大越浅）"""
+    hex_color = hex_color.lstrip('#')
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    r = int(r + (255 - r) * factor)
+    g = int(g + (255 - g) * factor)
+    b = int(b + (255 - b) * factor)
+    return f'{r:02X}{g:02X}{b:02X}'
+
+
+def generate_excel(week_num):
+    """生成指定周的 Excel 文件（3个sheet），返回文件路径"""
     conn = get_db()
     rows = db_fetchall(db_execute(conn, 'SELECT * FROM members ORDER BY name'))
-    members = [row_to_dict(r) for r in rows]
+    all_members = [row_to_dict(r) for r in rows]
     conn.close()
 
     wb = Workbook()
-    ws = wb.active
-    ws.title = f'第{week_num}周'
 
     # 样式定义
     header_font = Font(name='微软雅黑', size=11, bold=True, color='FFFFFF')
@@ -242,79 +319,46 @@ def generate_excel(week_num):
         bottom=Side(style='thin', color='D0D0D0'),
     )
 
-    # 按职业分组
-    prof_members = {}
-    for p in PROFESSIONS:
-        prof_members[p] = [m for m in members if m['profession'] == p and (m['attendThursday'] or m['attendSaturday'])]
+    # Sheet 1: 霜陨领主（周四）
+    ws1 = wb.active
+    ws1.title = f'第{week_num}周 霜陨领主'
+    thu_members = [m for m in all_members if m['attendThursday']]
+    _build_profession_sheet(ws1, thu_members, header_font, cell_font, center_align, thin_border)
 
-    # 标题行：职业名 | 非凡评分（保留列但没数据，参考原表排版）
-    headers = []
-    for p in PROFESSIONS:
-        headers.append(p)
-        headers.append('')  # 原表有评分列，这里留空保持排版
-    ws.append(headers)
+    # Sheet 2: 猎城战（周六）
+    ws2 = wb.create_sheet(title=f'第{week_num}周 猎城战')
+    sat_members = [m for m in all_members if m['attendSaturday']]
+    _build_profession_sheet(ws2, sat_members, header_font, cell_font, center_align, thin_border)
 
-    # 表头样式
-    for col_idx, p in enumerate(PROFESSIONS):
-        name_col = col_idx * 2 + 1
-        score_col = col_idx * 2 + 2
-        color = PROF_COLORS[p]
-        fill = PatternFill(start_color=color, end_color=color, fill_type='solid')
-
-        name_cell = ws.cell(row=1, column=name_col, value=p)
-        name_cell.font = header_font
-        name_cell.fill = fill
-        name_cell.alignment = center_align
-        name_cell.border = thin_border
-
-        score_cell = ws.cell(row=1, column=score_col, value='')
-        score_cell.fill = fill
-        score_cell.border = thin_border
-
-    # 填充成员，最多列数作为行数
-    max_count = max(len(v) for v in prof_members.values()) if prof_members else 0
-
-    for row_idx in range(max_count):
-        row_data = []
-        for p in PROFESSIONS:
-            plist = prof_members[p]
-            if row_idx < len(plist):
-                m = plist[row_idx]
-                # 名字后面标参加场次
-                tags = []
-                if m['attendThursday']:
-                    tags.append('四')
-                if m['attendSaturday']:
-                    tags.append('六')
-                display_name = m['name']
-                if len(tags) == 1:
-                    display_name += f'（{tags[0]}）'
-                row_data.append(display_name)
-                row_data.append('')  # 评分列留空
-            else:
-                row_data.append('')
-                row_data.append('')
-        ws.append(row_data)
-
-    # 设置列宽和边框
-    for col_idx in range(1, len(PROFESSIONS) * 2 + 1):
-        col_letter = get_column_letter(col_idx)
-        if col_idx % 2 == 1:
-            ws.column_dimensions[col_letter].width = 15  # 名字列
-        else:
-            ws.column_dimensions[col_letter].width = 8  # 空列
-
-    for row in ws.iter_rows(min_row=1, max_row=max_count + 1, min_col=1, max_col=len(PROFESSIONS) * 2):
-        for cell in row:
-            cell.alignment = center_align
-            cell.border = thin_border
-            if cell.row > 1:
-                cell.font = cell_font
-
-    # 行高
-    ws.row_dimensions[1].height = 28
-    for r in range(2, max_count + 2):
-        ws.row_dimensions[r].height = 22
+    # Sheet 3: 总表（双场标记）
+    ws3 = wb.create_sheet(title=f'第{week_num}周 总表')
+    # 总表在名称后标（四）（六）
+    total_members = [m for m in all_members if m['attendThursday'] or m['attendSaturday']]
+    # 构造带场次标记的昵称
+    for m in total_members:
+        tags = []
+        if m['attendThursday']:
+            tags.append('四')
+        if m['attendSaturday']:
+            tags.append('六')
+        display = m['name']
+        if len(tags) == 1:
+            display += f'（{tags[0]}）'
+        # 改 name 用于显示（不影响原数据）
+        m = dict(m, name=display)
+    # 重新构建列表
+    display_members = []
+    for m in total_members:
+        tags = []
+        if m['attendThursday']:
+            tags.append('四')
+        if m['attendSaturday']:
+            tags.append('六')
+        display = m['name']
+        if len(tags) == 1:
+            display += f'（{tags[0]}）'
+        display_members.append(dict(m, name=display))
+    _build_profession_sheet(ws3, display_members, header_font, cell_font, center_align, thin_border)
 
     # 保存文件
     filename = f'第{week_num}周报名名单.xlsx'
