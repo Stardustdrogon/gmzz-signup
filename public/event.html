@@ -95,7 +95,10 @@
 
     <script src="/app.js"></script>
     <script>
-        const eventKey = window.location.pathname.split('/').pop();
+        // 优先从 URL 查询参数 ?event=xxx 取活动标识（首页卡片跳转方式）
+        // 兼容 /event/thursday 这类路径式路由
+        const params = new URLSearchParams(window.location.search);
+        const eventKey = params.get('event') || window.location.pathname.split('/').pop();
         initEventPage(eventKey);
     </script>
 </body>
