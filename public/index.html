@@ -90,23 +90,58 @@
                     document.getElementById('weekBadge').textContent = data.weekLabel;
                     document.getElementById('thuWeek').textContent = data.weekLabel;
                     document.getElementById('satWeek').textContent = data.weekLabel;
-                    document.getElementById('thuDeadline').textContent = '报名截止: ' + data.thursdayDeadlineStr;
-                    document.getElementById('satDeadline').textContent = '报名截止: ' + data.saturdayDeadlineStr;
                     document.getElementById('nextReset').textContent = data.nextResetStr;
-                    // 启动倒计时
-                    startCountdown('thuCountdown', data.thursdayDeadline);
-                    startCountdown('satCountdown', data.saturdayDeadline);
+
+                    // 周四卡片状态
+                    const thuCard = document.querySelector('.card-thursday');
+                    const thuDeadlineEl = document.getElementById('thuDeadline');
+                    if (data.thursdayEnabled === false) {
+                        thuCard.classList.add('card-closed');
+                        thuDeadlineEl.textContent = '活动已关闭';
+                        startCountdown('thuCountdown', 0, 'closed');
+                    } else if (data.thursdayNotOpen) {
+                        thuCard.classList.add('card-not-open');
+                        thuDeadlineEl.textContent = '报名开放: ' + data.thursdayOpenStr;
+                        startCountdown('thuCountdown', data.thursdayOpen, 'not_open');
+                    } else {
+                        thuCard.classList.remove('card-closed', 'card-not-open');
+                        thuDeadlineEl.textContent = '报名截止: ' + data.thursdayDeadlineStr;
+                        startCountdown('thuCountdown', data.thursdayDeadline, 'deadline');
+                    }
+
+                    // 周六卡片状态
+                    const satCard = document.querySelector('.card-saturday');
+                    const satDeadlineEl = document.getElementById('satDeadline');
+                    if (data.saturdayEnabled === false) {
+                        satCard.classList.add('card-closed');
+                        satDeadlineEl.textContent = '活动已关闭';
+                        startCountdown('satCountdown', 0, 'closed');
+                    } else if (data.saturdayNotOpen) {
+                        satCard.classList.add('card-not-open');
+                        satDeadlineEl.textContent = '报名开放: ' + data.saturdayOpenStr;
+                        startCountdown('satCountdown', data.saturdayOpen, 'not_open');
+                    } else {
+                        satCard.classList.remove('card-closed', 'card-not-open');
+                        satDeadlineEl.textContent = '报名截止: ' + data.saturdayDeadlineStr;
+                        startCountdown('satCountdown', data.saturdayDeadline, 'deadline');
+                    }
                 });
         }
 
-        function startCountdown(elementId, targetTs) {
+        function startCountdown(elementId, targetTs, mode) {
             function update() {
                 const el = document.getElementById(elementId);
                 if (!el) return;
                 const now = Math.floor(Date.now() / 1000);
                 const diff = targetTs - now;
-                if (diff <= 0) {
-                    el.textContent = '已截止';
+                if (mode === 'closed' || diff <= 0) {
+                    if (mode === 'not_open') {
+                        el.textContent = '已开放';
+                    } else if (mode === 'closed') {
+                        el.textContent = '已关闭';
+                    } else {
+                        el.textContent = '已截止';
+                    }
                     el.classList.add('countdown-closed');
                     return;
                 }

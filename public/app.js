@@ -68,14 +68,46 @@ function loadEventDeadline(eventKey) {
         .then(r => r.json())
         .then(data => {
             const deadlineKey = eventKey + 'Deadline';
+            const openKey = eventKey + 'Open';
             const deadlineTs = data[deadlineKey];
-            if (deadlineTs) {
-                startEventCountdown(deadlineTs);
+            const openTs = data[openKey];
+            const notOpen = data[eventKey + 'NotOpen'];
+            const enabled = data[eventKey + 'Enabled'];
+
+            // 禁用/启用表单
+            const form = document.getElementById('signupForm');
+            const submitBtn = document.getElementById('submitBtn');
+            const countdownLabel = document.querySelector('.countdown-label');
+            const countdownTime = document.getElementById('countdownTime');
+            const container = document.getElementById('eventCountdown');
+
+            if (enabled === false) {
+                // 活动已关闭
+                if (form) form.classList.add('form-disabled');
+                if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '活动已关闭'; }
+                if (countdownLabel) countdownLabel.textContent = '活动状态';
+                if (countdownTime) {
+                    countdownTime.textContent = '已关闭';
+                    countdownTime.classList.add('countdown-closed');
+                }
+                if (container) container.classList.add('countdown-closed-wrap');
+            } else if (notOpen) {
+                // 报名未开放，显示开放倒计时
+                if (form) form.classList.add('form-disabled');
+                if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '报名未开放'; }
+                if (countdownLabel) countdownLabel.textContent = '距离报名开放';
+                if (openTs) startEventCountdown(openTs, 'not_open');
+            } else if (deadlineTs) {
+                // 正常显示截止倒计时
+                if (form) form.classList.remove('form-disabled');
+                if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '确认报名'; }
+                if (countdownLabel) countdownLabel.textContent = '距离报名截止';
+                startEventCountdown(deadlineTs, 'deadline');
             }
         });
 }
 
-function startEventCountdown(targetTs) {
+function startEventCountdown(targetTs, mode) {
     function update() {
         const el = document.getElementById('countdownTime');
         if (!el) return;
@@ -83,7 +115,11 @@ function startEventCountdown(targetTs) {
         const diff = targetTs - now;
         const container = document.getElementById('eventCountdown');
         if (diff <= 0) {
-            el.textContent = '已截止';
+            if (mode === 'deadline') {
+                el.textContent = '已截止';
+            } else {
+                el.textContent = '已开放';
+            }
             el.classList.add('countdown-closed');
             if (container) container.classList.add('countdown-closed-wrap');
             return;

@@ -72,6 +72,17 @@ EVENTS = {
 DEADLINE_HOUR = 17
 DEADLINE_MINUTE = 30
 
+# 报名开放时间：周一早上 8:00（周日0点重置后，周一8点才开放报名）
+SIGNUP_OPEN_WEEKDAY = 0  # 0=周一
+SIGNUP_OPEN_HOUR = 8
+SIGNUP_OPEN_MINUTE = 0
+
+# 活动开关：可单独关闭某场活动的报名
+EVENT_ENABLED = {
+    'thursday': False,  # 周四霜陨领主 已关闭
+    'saturday': True,   # 周六猎城战 正常开放
+}
+
 # SSE 相关
 sse_clients = set()
 sse_lock = threading.Lock()
@@ -178,7 +189,7 @@ def get_next_reset_time():
     return int(next_sunday.timestamp())
 
 def get_deadline_info(event_key):
-    """获取指定活动的下次截止时间和活动时间"""
+    """获取指定活动的下次截止时间、开放时间和活动时间"""
     event = EVENTS[event_key]
     target_weekday = event['weekday']
     now = datetime.now()
@@ -193,17 +204,45 @@ def get_deadline_info(event_key):
         hour=DEADLINE_HOUR, minute=DEADLINE_MINUTE, second=0, microsecond=0)
     event_date = deadline_date + timedelta(hours=1, minutes=30)  # 19:00
 
+    # 计算报名开放时间：活动那周的周一 08:00
+    # 先找到活动日所在周的周一
+    event_weekday = event['weekday']
+    # 找到目标活动日的日期
+    target_event_date = deadline_date + timedelta(hours=1, minutes=30)
+    # 该周的周一 = 活动日 - (活动日weekday - 0)天
+    monday_of_event_week = target_event_date - timedelta(days=event_weekday)
+    signup_open_date = monday_of_event_week.replace(
+        hour=SIGNUP_OPEN_HOUR, minute=SIGNUP_OPEN_MINUTE, second=0, microsecond=0)
+
+    # 活动是否启用
+    enabled = EVENT_ENABLED.get(event_key, True)
+
+    # 判断当前状态
+    is_closed = False
+    is_not_open = False
+    if not enabled:
+        is_closed = True
+    elif now < signup_open_date:
+        is_not_open = True
+    elif days_ahead == 0:
+        # 今天是活动日且已过截止
+        is_closed = True
+
     return {
         'deadline_ts': int(deadline_date.timestamp()),
         'deadline_str': deadline_date.strftime('%m-%d %H:%M'),
         'event_time_str': event_date.strftime('%m-%d %H:%M'),
-        'is_closed': days_ahead == 0  # 今天是活动日且已过截止
+        'signup_open_ts': int(signup_open_date.timestamp()),
+        'signup_open_str': signup_open_date.strftime('%m-%d %H:%M'),
+        'is_closed': is_closed,
+        'is_not_open': is_not_open,
+        'enabled': enabled,
     }
 
 def is_signup_closed(event_key):
-    """判断指定活动报名是否已截止"""
+    """判断指定活动报名是否已截止（或未开放）"""
     info = get_deadline_info(event_key)
-    return info['is_closed']
+    return info['is_closed'] or info['is_not_open']
 
 # ========== SSE 广播 ==========
 def broadcast(event_name, data):
@@ -441,7 +480,7 @@ def stream():
             next_reset = get_next_reset_time()
             thu_info = get_deadline_info('thursday')
             sat_info = get_deadline_info('saturday')
-            yield f'event: connected\ndata: {json.dumps({"status":"ok","week":week,"nextReset":next_reset,"thursdayDeadline":thu_info["deadline_ts"],"saturdayDeadline":sat_info["deadline_ts"]}, ensure_ascii=False)}\n\n'
+            yield f'event: connected\ndata: {json.dumps({"status":"ok","week":week,"nextReset":next_reset,"thursdayDeadline":thu_info["deadline_ts"],"saturdayDeadline":sat_info["deadline_ts"],"thursdayOpen":thu_info["signup_open_ts"],"saturdayOpen":sat_info["signup_open_ts"]}, ensure_ascii=False)}\n\n'
             while True:
                 try:
                     msg = q.get(timeout=30)
@@ -480,8 +519,16 @@ def get_week_info():
         'nextResetStr': datetime.fromtimestamp(next_reset).strftime('%Y-%m-%d %H:%M'),
         'thursdayDeadline': thu_info['deadline_ts'],
         'thursdayDeadlineStr': thu_info['deadline_str'],
+        'thursdayOpen': thu_info['signup_open_ts'],
+        'thursdayOpenStr': thu_info['signup_open_str'],
+        'thursdayEnabled': thu_info['enabled'],
+        'thursdayNotOpen': thu_info['is_not_open'],
         'saturdayDeadline': sat_info['deadline_ts'],
         'saturdayDeadlineStr': sat_info['deadline_str'],
+        'saturdayOpen': sat_info['signup_open_ts'],
+        'saturdayOpenStr': sat_info['signup_open_str'],
+        'saturdayEnabled': sat_info['enabled'],
+        'saturdayNotOpen': sat_info['is_not_open'],
     })
 
 
@@ -498,7 +545,11 @@ def get_events():
         e['deadline'] = info['deadline_ts']
         e['deadlineStr'] = info['deadline_str']
         e['eventTimeStr'] = info['event_time_str']
+        e['signupOpen'] = info['signup_open_ts']
+        e['signupOpenStr'] = info['signup_open_str']
         e['isClosed'] = info['is_closed']
+        e['isNotOpen'] = info['is_not_open']
+        e['enabled'] = info['enabled']
     return jsonify({'events': events, 'week': week})
 
 
@@ -569,23 +620,39 @@ def signup():
     if event_key not in ('thursday', 'saturday', 'both'):
         return jsonify({'error': '无效的活动选择'}), 400
 
-    # 截止时间校验（双场时只报没截止的那场）
-    thu_closed = is_signup_closed('thursday')
-    sat_closed = is_signup_closed('saturday')
+    # 报名状态校验
+    thu_info = get_deadline_info('thursday')
+    sat_info = get_deadline_info('saturday')
+    thu_closed = thu_info['is_closed']
+    sat_closed = sat_info['is_closed']
+    thu_not_open = thu_info['is_not_open']
+    sat_not_open = sat_info['is_not_open']
 
-    if event_key == 'thursday' and thu_closed:
-        return jsonify({'error': '周四活动报名已截止'}), 403
-    if event_key == 'saturday' and sat_closed:
-        return jsonify({'error': '周六活动报名已截止'}), 403
-    if event_key == 'both' and thu_closed and sat_closed:
-        return jsonify({'error': '两场活动报名均已截止'}), 403
+    def get_block_reason(event_key, info):
+        if not info['enabled']:
+            return f'{event_key}活动已关闭'
+        if info['is_not_open']:
+            return f'报名尚未开放（{info["signup_open_str"]}开放）'
+        if info['is_closed']:
+            return f'{event_key}活动报名已截止'
+        return ''
 
-    # 计算实际报名场次（已截止的就不报了）
+    thu_reason = get_block_reason('周四', thu_info)
+    sat_reason = get_block_reason('周六', sat_info)
+
+    if event_key == 'thursday' and thu_reason:
+        return jsonify({'error': thu_reason}), 403
+    if event_key == 'saturday' and sat_reason:
+        return jsonify({'error': sat_reason}), 403
+    if event_key == 'both' and thu_reason and sat_reason:
+        return jsonify({'error': '两场活动报名均未开放或已截止'}), 403
+
+    # 计算实际报名场次（已截止/未开放的就不报了）
     if event_key == 'both':
-        thu = 0 if thu_closed else 1
-        sat = 0 if sat_closed else 1
+        thu = 0 if thu_closed or thu_not_open else 1
+        sat = 0 if sat_closed or sat_not_open else 1
         if thu == 0 and sat == 0:
-            return jsonify({'error': '两场活动报名均已截止'}), 403
+            return jsonify({'error': '两场活动报名均未开放或已截止'}), 403
     else:
         thu = 1 if event_key == 'thursday' else 0
         sat = 1 if event_key == 'saturday' else 0
@@ -615,14 +682,14 @@ def signup():
         e = row_to_dict(existing)
         new_thu = e['attendThursday']
         new_sat = e['attendSaturday']
-        if event_key == 'thursday' and not thu_closed:
+        if event_key == 'thursday' and not thu_closed and not thu_not_open:
             new_thu = True
-        elif event_key == 'saturday' and not sat_closed:
+        elif event_key == 'saturday' and not sat_closed and not sat_not_open:
             new_sat = True
         elif event_key == 'both':
-            if not thu_closed:
+            if not thu_closed and not thu_not_open:
                 new_thu = True
-            if not sat_closed:
+            if not sat_closed and not sat_not_open:
                 new_sat = True
         thu = 1 if new_thu else 0
         sat = 1 if new_sat else 0
